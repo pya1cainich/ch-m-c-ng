@@ -233,7 +233,8 @@
         },
 
         // ── Lên lịch thông báo tương lai ────────────────────────────
-        scheduleNotification: async function(title, body, id, atDate) {
+        // extra (tuỳ chọn): { dateKey, job } — để NotificationReceiver validate khi app tắt
+        scheduleNotification: async function(title, body, id, atDate, extra) {
           if (!NativePlugin) return;
           const atMs = atDate instanceof Date ? atDate.getTime() : Number(atDate);
           if (isNaN(atMs) || atMs <= Date.now()) {
@@ -242,10 +243,24 @@
           }
           try {
             if (!notificationPermissionAsked) await ensureNotificationPermission();
-            await NativePlugin.scheduleNotification({ title, body, id, at: atMs });
+            const payload = { title, body, id, at: atMs };
+            if (extra && extra.dateKey) payload.dateKey = String(extra.dateKey);
+            if (extra && extra.job)     payload.job     = String(extra.job);
+            if (extra && extra.data)    payload.data    = String(extra.data);
+            await NativePlugin.scheduleNotification(payload);
             console.log('[ccNative] Scheduled id=' + id + ' at=' + new Date(atMs).toLocaleString());
           } catch(e) {
             console.error('[ccNative] scheduleNotification lỗi:', e);
+          }
+        },
+
+        // ── Đánh dấu ca đã checkout vào SharedPreferences (backup validate) ──
+        markOpenShiftClosed: async function(dateKey, job) {
+          if (!NativePlugin || !NativePlugin.markOpenShiftClosed) return;
+          try {
+            await NativePlugin.markOpenShiftClosed({ dateKey: String(dateKey || ''), job: String(job || 'main') });
+          } catch(e) {
+            console.warn('[ccNative] markOpenShiftClosed lỗi:', e);
           }
         },
 
@@ -349,6 +364,20 @@
           return NativePlugin.checkBatteryOptimizationPermission();
         },
 
+        checkExactAlarmPermission: async function() {
+          if (!NativePlugin || !NativePlugin.checkExactAlarmPermission) {
+            return { granted:true, missingBridge:true }; // fallback: assume granted
+          }
+          return NativePlugin.checkExactAlarmPermission();
+        },
+
+        requestExactAlarmPermission: async function() {
+          if (!NativePlugin || !NativePlugin.requestExactAlarmPermission) {
+            return { opened:false, missingBridge:true };
+          }
+          return NativePlugin.requestExactAlarmPermission();
+        },
+
         getWifiInfo: async function() {
           if (!NativePlugin || !NativePlugin.getWifiInfo) {
             return { connected:false, ssid:'', bssid:'', missingBridge:true };
@@ -423,8 +452,37 @@
           if (cfg.enabled && NativePlugin.startNativeGps) {
             const perm = await this.ensureLocationPermission();
             if (!perm || !perm.granted) return { ok:false, missingPermission:true, reason:'location-permission-required' };
+
+            // ── Kiểm tra battery optimization ──────────────────────────────
+            // Nếu chưa được whitelist → nhắc user (không block, chỉ warn).
+            // Đây là nguyên nhân #1 khiến service chết trên MIUI/Samsung.
+            try {
+              if (NativePlugin.checkBatteryOptimizationPermission) {
+                const bat = await NativePlugin.checkBatteryOptimizationPermission();
+                const ignored = !!(bat && (bat.ignoringBatteryOptimizations || bat.granted));
+                if (!ignored) {
+                  // Ghi flag để JS hiện banner nhắc sau khi start
+                  if (window._gpsData) window._gpsData._needBatteryPrompt = true;
+                }
+              }
+            } catch(e) { /* không block nếu check lỗi */ }
+
+            // ── Kiểm tra SCHEDULE_EXACT_ALARM (Android 12+) ────────────────
+            // Nếu không được grant → alarm không fire → service không restart được.
+            try {
+              if (NativePlugin.checkExactAlarmPermission) {
+                const ea = await NativePlugin.checkExactAlarmPermission();
+                const granted = !!(ea && (ea.granted || ea.canScheduleExactAlarms));
+                if (!granted) {
+                  if (window._gpsData) window._gpsData._needExactAlarmPrompt = true;
+                }
+              }
+            } catch(e) { /* không block */ }
+
             await NativePlugin.startNativeGps(cfg);
-            return { ok:true, started:true };
+            return { ok:true, started:true,
+              needBatteryPrompt: !!(window._gpsData && window._gpsData._needBatteryPrompt),
+              needExactAlarmPrompt: !!(window._gpsData && window._gpsData._needExactAlarmPrompt) };
           }
           if (!cfg.enabled && NativePlugin.stopNativeGps) {
             await NativePlugin.stopNativeGps();
@@ -573,6 +631,10 @@
           }
           syncNativeAttendanceStateSafe();
           pullNativeAttendanceSafe();
+          // Xem lại reminder đang chờ: nếu ca đã checkout thì huỷ hết thông báo tương lai
+          if (typeof window.gpsValidateOpenShiftReminders === 'function') {
+            window.gpsValidateOpenShiftReminders();
+          }
         }
       });
 

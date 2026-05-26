@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">ChamCongPro OnePiece Test</string>
-    <string name="title_activity_main">ChamCongPro OnePiece Test</string>
-    <string name="package_name">com.chamcongpro.onepiece.test</string>
-    <string name="custom_url_scheme">com.chamcongpro.onepiece.test</string>
+    <string name="app_name">ChamCongPro V3</string>
+    <string name="title_activity_main">ChamCongPro V3</string>
+    <string name="package_name">com.chamcongpro.onepiece.v3</string>
+    <string name="custom_url_scheme">com.chamcongpro.onepiece.v3</string>
 </resources>

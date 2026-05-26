@@ -724,7 +724,29 @@ function saHasCheckoutRecord(){
   return !!(today.out || (today.sub && today.sub.out) || yesterday.out || (yesterday.sub && yesterday.sub.out));
 }
 
+function saShouldPreserveCheckedOutSleep(now){
+  var sleepMs = _saPostCheckoutSleepMs(now || Date.now());
+  return sleepMs > 0 && !saHasOpenAttendance() && saHasCheckoutRecord();
+}
+
+function saNormalizePostCheckoutState(reason){
+  if(!saShouldPreserveCheckedOutSleep()) return false;
+  if(_sa.state === STATE.CHECKED_OUT) return false;
+  var old = _sa.state;
+  _sa.state = STATE.CHECKED_OUT;
+  _sa.stateChangedAt = Date.now();
+  _sa.checkoutWaitStart = 0;
+  _sa.wifiLostAt = 0;
+  _sa.workSignalLostAt = 0;
+  saResetCheckinConfirm();
+  saResetCheckoutConfirm();
+  saSave();
+  saLog('STATE_NORMALIZED', old + ' -> CHECKED_OUT (' + (reason || 'giu ngu sau checkout') + ')');
+  return true;
+}
+
 function saResetStaleWorkState(reason){
+  if(saNormalizePostCheckoutState('reset stale guard')) return true;
   saSyncAttendanceFlagsFromData();
   if(!saNeedsOpenAttendanceState(_sa.state) || saHasOpenAttendance()) return false;
   var old = _sa.state;
@@ -813,7 +835,9 @@ function saDoCheckin(method, atMs){
   var targetJob = isSub ? 'sub' : 'main';
 
   if(typeof gpsEnsureCycleForCheckin === 'function'){
-    var canConfirm = !(document && document.visibilityState === 'hidden');
+    // Smart auto không nên bật popup confirm "đóng ca cũ" vì dễ gây cảm giác
+    // "tự dưng hiện cảnh báo". Việc confirm để manual flow xử lý.
+    var canConfirm = false;
     var cycle = gpsEnsureCycleForCheckin(targetJob, {
       source: 'smart_attendance',
       nowMs: t.getTime(),
@@ -879,12 +903,13 @@ function saDoCheckin(method, atMs){
   var prefix = isSub ? ('💼 ' + subName + ' ') : '';
   showGpsBanner(prefix + _inMsg + hm + ' (' + methodLabel + ')', isSub ? '#7B5EA7' : '#0D9E75');
 
-  if(window.ccNative && window.ccNative.sendNotification){
-    window.ccNative.sendNotification(
+  if(window.ccNative && window.ccNative.scheduleNotification){
+    window.ccNative.scheduleNotification(
       (isSub ? '💼 ' + subName + ' — ' : '') + _inNotifTitle,
       _inNotifBody + hm + ' (' + methodLabel + _autoSfx + ')',
-      isSub ? 2003 : 2001
-    );
+      isSub ? 2003 : 2001,
+      Date.now() + 2000
+    ).catch(function(){});
   }
 
   saLog('CHECK_IN_OK', method + ' — ' + hm + (isSub ? ' [sub]' : ''));
@@ -963,15 +988,23 @@ function saDoCheckout(method, atMs){
   var prefix1 = isSub ? ('💼 ' + subName1 + ' ') : '';
   showGpsBanner(prefix1 + _outMsg + hm + ' (' + methodLabel + ')', isSub ? '#9B6FC0' : '#F5A623');
 
-  if(window.ccNative && window.ccNative.sendNotification){
-    window.ccNative.sendNotification(
+  // Dùng scheduleNotification (AlarmManager) thay vì sendNotification trực tiếp
+  // để notification hiện ngay cả khi app đang background (OEM battery optimizer hay chặn bridge)
+  if(window.ccNative && window.ccNative.scheduleNotification){
+    window.ccNative.scheduleNotification(
       (isSub ? '💼 ' + subName1 + ' — ' : '') + _outNotifTitle,
       _outNotifBody + hm + ' (' + methodLabel + _autoSfx1 + ')',
-      isSub ? 2004 : 2002
-    );
+      isSub ? 2004 : 2002,
+      Date.now() + 2000
+    ).catch(function(){});
   }
 
   saLog('CHECK_OUT_OK', method + ' — ' + hm + (isSub ? ' [sub]' : ''));
+
+  // Huỷ alarm deadline checkout vì checkout đã xảy ra (dù qua kênh nào)
+  if(window.ccNative && window.ccNative.cancelNotification){
+    window.ccNative.cancelNotification(9101).catch(function(){});
+  }
 
   // Tắt GPS ngay sau ra ca, đặt timer đánh thức lại trước chu kỳ mới 15p.
   saStopGps();
@@ -1722,6 +1755,26 @@ function saOpenCheckoutWindow(now, reason){
   saTransition(STATE.WAIT_CHECKOUT_CONFIRM,
     reason || ('mo cua so checkout ' + checkoutMinVal + 'p'));
   saForceNativeDeadlineSync('checkout');
+  _saScheduleNativeCheckoutAlarm(now);
+}
+
+/** Đặt AlarmManager alarm deadline checkout để Java fire ngay cả khi WebView bị kill */
+function _saScheduleNativeCheckoutAlarm(windowStartMs){
+  if(!window.ccNative || !window.ccNative.scheduleNotification) return;
+  var deadlineMs = windowStartMs + saCheckoutMs();
+  if(deadlineMs <= Date.now()) return;
+  var L = _saL();
+  var title = {vi:'🏁 Đã ra ca',en:'🏁 Clocked Out',ko:'🏁 퇴근',ja:'🏁 退勤',zh:'🏁 下班',
+               my:'🏁 ထွက်',th:'🏁 ออกงาน',id:'🏁 Keluar',ph:'🏁 Time Out',
+               ne:'🏁 बाहिरियो',hi:'🏁 बाहर'}[L]||'🏁 Đã ra ca';
+  var body = {vi:'Chấm công ra ca tự động (timeout)',en:'Auto clocked out (timeout)'}[L]
+             ||'Chấm công ra ca tự động (timeout)';
+  // Gọi với positional args: (title, body, id, atDate, extra)
+  window.ccNative.scheduleNotification(
+    title, body, 9101, deadlineMs,
+    { data: JSON.stringify({ windowStartMs: windowStartMs }) }
+  ).catch(function(e){ console.warn('[SA] schedule checkout alarm failed:', e); });
+  saLog('CHECKOUT_ALARM_SCHEDULED', 'deadline=' + new Date(deadlineMs).toLocaleTimeString());
 }
 
 /** Cập nhật accumulator tan ca. Trả về {totalOnMs, totalOffMs} */
@@ -2567,15 +2620,50 @@ function saForceNativeDeadlineSync(label){
   }
 }
 
+/** Áp dụng checkout đã được Java ghi vào CapacitorStorage khi JS không chạy */
+function _saApplyPendingNativeCheckout(){
+  try {
+    var raw = typeof lsGet === 'function' ? lsGet('cp22_sa_pending_checkout') : null;
+    if(!raw || !raw.time || !raw.date) return;
+    var date = raw.date, time = raw.time, method = raw.method || 'timeout';
+    var data = saAttendanceData();
+    var rec  = data[date];
+    if(rec && rec.in && !rec.out){
+      if(typeof attendanceSetOut === 'function'){
+        attendanceSetOut(rec, date, time, new Date(date + 'T' + time).getTime());
+      } else {
+        rec.out = time;
+      }
+      rec.auto = true;
+      rec.autoOutMethod = method + '_native';
+      if(typeof saveAtt === 'function') saveAtt();
+      if(typeof renderHomeStats === 'function') renderHomeStats();
+      saLog('PENDING_CHECKOUT_APPLIED', date + ' ' + time + ' (' + method + ')');
+      var _L2 = _saL();
+      var _msg2 = {vi:'🏁 Đã ra ca lúc ',en:'🏁 Clocked out at ',ko:'🏁 퇴근 완료 ',
+                   ja:'🏁 退勤 ',zh:'🏁 下班打卡 '}[_L2]||'🏁 Đã ra ca lúc ';
+      if(typeof showGpsBanner === 'function') showGpsBanner(_msg2 + time + ' (auto)', '#F5A623');
+      if(window.ccNative && window.ccNative.scheduleNotification){
+        var _t2 = {vi:'🏁 Đã ra ca',en:'🏁 Clocked Out',ko:'🏁 퇴근',ja:'🏁 退勤',zh:'🏁 下班'}[_L2]||'🏁 Đã ra ca';
+        var _b2 = {vi:'Chấm công ra ca lúc ',en:'Clocked out at '}[_L2]||'Chấm công ra ca lúc ';
+        window.ccNative.scheduleNotification(_t2, _b2 + time + ' (timeout)', 2002, Date.now() + 2000).catch(function(){});
+      }
+    }
+    if(typeof lsSet === 'function') lsSet('cp22_sa_pending_checkout', null);
+  } catch(e){ console.warn('[SA] apply pending checkout failed:', e); }
+}
+
 function saEnable(){
   if(window.__SA_STARTED__) return;
   window.__SA_STARTED__ = true;
   saLoad();
+  _saApplyPendingNativeCheckout();
   _saRestoreGpsWakeup();
   _sa.enabled = true;
   saSyncLegacyAutoSwitch(true);
   saSyncWorkGpsFromLegacy();
   saDailyReset();
+  saNormalizePostCheckoutState('enable restore');
   saResetStaleWorkState('bat lai khi khong co ca dang mo');
   saReconcileExistingCheckinState('bat lai da co IN');
   saSave();
@@ -2651,6 +2739,302 @@ function saDailyReset(){
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
+   14B. GPS AUTO CONTROL — Bridge tương thích do Smart Attendance sở hữu
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+function startGeofencing(){
+  if(window._gpsData && window._gpsData.smartAttendanceMode && window._sa && window._sa.enabled) return;
+  console.warn('[GPS] startGeofencing: chỉ hỗ trợ smartAttendanceMode. Bật Smart Attendance để dùng GPS.');
+}
+
+function stopGeofencing(options){
+  if(typeof saStopGps === 'function') try{ saStopGps(); }catch(e){}
+}
+
+function startBackgroundGps(){
+  try{
+    if(window.ccNative && window.ccNative.syncNativeGps){
+      window.ccNative.syncNativeGps(_gpsData).catch(function(){});
+      _gpsBgWatchId = 'native';
+      window._gpsBgWatchId = 'native';
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+
+function stopBackgroundGps(){
+  _gpsBgWatchId = null;
+  window._gpsBgWatchId = null;
+  try{
+    var plugin = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.ChamCongNative;
+    if(plugin && plugin.stopNativeGps) plugin.stopNativeGps();
+  }catch(e){}
+}
+
+function _processGpsPosition(pos){}
+
+function _handleGpsError(err){
+  _gpsErrorCount++;
+  console.warn('[GPS Error]', err && (err.code || err.message) || err);
+}
+
+function setGpsBatteryProfile(profile){
+  if(GPS_BATTERY_PROFILES[profile]) _gpsBatteryProfile = profile;
+}
+
+function gpsAutoCheckin(){
+  if(typeof saDoCheckin === 'function'){ saDoCheckin('gps'); return; }
+  console.warn('[GPS] gpsAutoCheckin: saDoCheckin chưa sẵn sàng');
+}
+
+function gpsAutoCheckout(){
+  if(typeof saDoCheckout === 'function'){ saDoCheckout('gps'); return; }
+  console.warn('[GPS] gpsAutoCheckout: saDoCheckout chưa sẵn sàng');
+}
+
+function _ensureGpsAutoRunningCore(reason){
+  try{
+    if(!_gpsData.enabled || !_gpsData.smartAttendanceMode){
+      _gpsData.enabled = true;
+      _gpsData.smartAttendanceMode = true;
+      gpsSetAutoAttendanceUi(true);
+      if(window.notifCfg){
+        notifCfg.n3 = true;
+        if(typeof saveNotif === 'function') saveNotif();
+      }
+      if(typeof saveGpsData === 'function') saveGpsData();
+      console.log('[GPS] auto-start smart attendance:', reason || 'startup');
+    }
+
+    if(_gpsData.smartAttendanceMode){
+      gpsSetAutoAttendanceUi(true);
+      if(typeof window.saEnable === 'function'){
+        if(!window._sa || !window._sa.enabled) window.saEnable();
+        else if(typeof window.saUpdateUI === 'function') window.saUpdateUI();
+      } else {
+        setTimeout(function(){
+          if(window._gpsData && window._gpsData.smartAttendanceMode && typeof window.saEnable === 'function'){
+            window.saEnable();
+          }
+        }, 800);
+      }
+      if(typeof gpsSyncNativeNow === 'function') gpsSyncNativeNow();
+      else if(window.ccNative && window.ccNative.syncNativeGps) window.ccNative.syncNativeGps(_gpsData).catch(function(){});
+      // Quan trọng cho APK: ép NativeGpsService chạy nền ngay khi smart mode bật.
+      if(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()){
+        if(window.ccNative && typeof window.ccNative.startBg === 'function'){
+          window.ccNative.startBg().then(function(res){
+            if(res && res.started){
+              _gpsBgWatchId = 'native';
+              window._gpsBgWatchId = 'native';
+            }
+          }).catch(function(e){
+            console.warn('[GPS] startBg failed:', e);
+          });
+        } else if(typeof window.startBackgroundGps === 'function'){
+          window.startBackgroundGps();
+        }
+      }
+      return true;
+    }
+
+    var loc = (typeof gpsResolveRunnableLocation === 'function') ? gpsResolveRunnableLocation() : null;
+    if(!loc){
+      if(typeof updateGpsStatus === 'function') updateGpsStatus();
+      console.warn('[GPS] auto-start skipped: no saved location', reason || '');
+      return false;
+    }
+
+    try{
+      var btn = document.getElementById('togN3');
+      if(btn) btn.classList.add('on');
+      var card = document.getElementById('gpsSetupCard');
+      if(card) card.style.display = 'block';
+      if(window.notifCfg){
+        notifCfg.n3 = true;
+        if(typeof saveNotif === 'function') saveNotif();
+      }
+    }catch(e){}
+
+    if(typeof gpsSyncNativeNow === 'function') gpsSyncNativeNow();
+    else if(window.ccNative && window.ccNative.syncNativeGps) window.ccNative.syncNativeGps(_gpsData).catch(function(){});
+
+    if(!_gpsInterval && typeof startGeofencing === 'function'){
+      console.log('[GPS] auto-start geofence:', reason || 'ensure');
+      startGeofencing();
+    } else if(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()
+      && _gpsBgWatchId !== 'native'
+      && typeof window.startBackgroundGps === 'function'){
+      window.startBackgroundGps();
+    }
+
+    if(typeof updateGpsStatus === 'function') updateGpsStatus();
+    return true;
+  }catch(e){
+    console.warn('[GPS] _ensureGpsAutoRunningCore failed:', e);
+    return false;
+  }
+}
+
+function _gpsShowPermNeeded(reason){
+  var banner = document.getElementById('gpsPermNeededBanner');
+  if(!banner){
+    banner = document.createElement('div');
+    banner.id = 'gpsPermNeededBanner';
+    banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);'
+      + 'z-index:9998;width:calc(100% - 32px);max-width:360px;padding:14px 16px;'
+      + 'border-radius:16px;background:#1A2332;color:white;font-size:13px;font-weight:800;'
+      + 'font-family:Nunito,sans-serif;text-align:center;'
+      + 'box-shadow:0 8px 32px rgba(0,0,0,.35)';
+    document.body.appendChild(banner);
+  }
+  banner.innerHTML = '📍 Cần quyền vị trí để chấm công GPS tự động'
+    + '<br><button onclick="openNativePermissionSetting(\'location\')"'
+    + ' style="margin-top:10px;padding:8px 20px;border:0;border-radius:10px;'
+    + 'background:#0D9E75;color:white;font-size:13px;font-weight:800;'
+    + 'cursor:pointer;font-family:Nunito,sans-serif">Cấp quyền ngay</button>';
+  banner.style.display = 'block';
+  console.log('[GPS] permission needed, reason:', reason);
+}
+
+function _gpsHidePermNeeded(){
+  var banner = document.getElementById('gpsPermNeededBanner');
+  if(banner) banner.style.display = 'none';
+}
+
+function ensureGpsAutoRunning(reason){
+  try{
+    if(typeof loadGpsData === 'function') loadGpsData();
+    if(!_gpsData) return false;
+    if(window.__gpsManualOffThisSession) return false;
+
+    var isCapNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    if(isCapNative){
+      if(!window.ccNative) return false;
+      if(!window.ccNative.plugins || !window.ccNative.plugins.CN){
+        _gpsShowPermNeeded('plugin-not-ready');
+        return false;
+      }
+      window.ccNative.checkLocationPermission().then(function(perm){
+        var granted = !!(perm && (perm.location === 'granted'
+          || perm.fineLocation === 'granted'
+          || perm.coarseLocation === 'granted'));
+        if(granted){
+          _gpsHidePermNeeded();
+          _ensureGpsAutoRunningCore(reason);
+        } else {
+          _gpsShowPermNeeded('denied');
+        }
+      }).catch(function(){
+        _ensureGpsAutoRunningCore(reason);
+      });
+      return true;
+    }
+
+    _ensureGpsAutoRunningCore(reason);
+    return true;
+  }catch(e){
+    console.warn('[GPS] ensureGpsAutoRunning failed:', e);
+    return false;
+  }
+}
+
+function scheduleGpsAutoStart(reason){
+  [0, 700, 2000, 5000].forEach(function(delay){
+    setTimeout(function(){ ensureGpsAutoRunning((reason || 'auto') + '+' + delay); }, delay);
+  });
+}
+
+function gpsSetAutoAttendanceUi(enabled){
+  var on = !!enabled;
+  var gpsBtn = document.getElementById('togN3');
+  if(gpsBtn) gpsBtn.classList.toggle('on', on);
+  var saBtn = document.getElementById('togSA');
+  if(saBtn) saBtn.classList.toggle('on', on);
+  var card = document.getElementById('gpsSetupCard');
+  if(card) card.style.display = on ? 'block' : 'none';
+  if(window.notifCfg) notifCfg.n3 = on;
+}
+
+function gpsSetSmartAutoAttendance(enabled, reason){
+  var on = !!enabled;
+  window.__gpsManualOffThisSession = !on;
+  if(typeof loadGpsData === 'function') loadGpsData();
+  _gpsData.enabled = on;
+  _gpsData.smartAttendanceMode = on;
+  gpsSetAutoAttendanceUi(on);
+
+  if(on){
+    if(typeof window.saEnable === 'function'){
+      window.saEnable();
+    } else {
+      setTimeout(function(){
+        if(window._gpsData && window._gpsData.smartAttendanceMode && typeof window.saEnable === 'function'){
+          window.saEnable();
+        }
+      }, 800);
+    }
+    setTimeout(function(){ ensureGpsAutoRunning(reason || 'toggle-on'); }, 120);
+  } else {
+    if(typeof window.saDisable === 'function') window.saDisable();
+    if(typeof stopGeofencing === 'function') stopGeofencing();
+  }
+
+  if(typeof saveNotif === 'function') saveNotif();
+  if(typeof saveGpsData === 'function') saveGpsData();
+  if(typeof updateGpsStatus === 'function') updateGpsStatus();
+  if(typeof _addGpsTrail === 'function') _addGpsTrail({type:'SMART_AUTO_TOGGLE', enabled:on, reason:reason || 'toggle'});
+  return true;
+}
+
+function installGpsResumeHooks(){
+  if(window.__gpsAutoStartHooksInstalled) return;
+  window.__gpsAutoStartHooksInstalled = true;
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', function(){ scheduleGpsAutoStart('dom-ready'); });
+  } else {
+    scheduleGpsAutoStart('dom-ready');
+  }
+  window.addEventListener('focus', function(){ setTimeout(function(){ ensureGpsAutoRunning('window-focus'); }, 250); });
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden) setTimeout(function(){ ensureGpsAutoRunning('visible'); }, 250);
+  });
+}
+
+function installCapacitorGpsResumeHook(){
+  if(window.__gpsCapacitorResumeHookInstalled) return;
+  var App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+  if(!App || !App.addListener) return;
+  window.__gpsCapacitorResumeHookInstalled = true;
+  try{
+    App.addListener('appStateChange', function(state){
+      if(state && state.isActive) setTimeout(function(){ ensureGpsAutoRunning('appState-active'); }, 250);
+    });
+  }catch(e){}
+}
+
+function installGpsV3Bridge(){
+  window.gpsV3 = {
+    setActiveJob       : typeof setActiveGpsJob === 'function' ? setActiveGpsJob : function(){},
+    getActiveLocation  : typeof getActiveGpsLocation === 'function' ? getActiveGpsLocation : function(){ return null; },
+    saveLocationForJob : typeof saveGpsLocationForJob === 'function' ? saveGpsLocationForJob : function(){},
+    setBatteryProfile  : setGpsBatteryProfile,
+    getTrail           : function(){ return _gpsTrail.slice(); },
+    isInsidePolygon    : typeof isInsidePolygon === 'function' ? isInsidePolygon : function(){ return false; },
+    startBackground    : startBackgroundGps,
+    stopBackground     : stopBackgroundGps,
+    restart            : function(){
+      if(typeof saStopGps === 'function') try{ saStopGps(); }catch(e){}
+      if(typeof saEnable === 'function') setTimeout(function(){ saEnable(); }, 300);
+    },
+    getStats           : function(){
+      return { enabled: _gpsData && _gpsData.enabled, smartMode: true, batteryProfile: _gpsBatteryProfile };
+    }
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
    15. INIT — Khởi tạo
    ═══════════════════════════════════════════════════════════════════════════════ */
 
@@ -2661,6 +3045,7 @@ function saInit(){
   saSyncWorkGpsFromLegacy();
   saDailyReset();
   _saRestoreGpsWakeup();
+  saNormalizePostCheckoutState('init restore');
   saResetStaleWorkState('khoi dong khi khong co ca dang mo');
   saReconcileExistingCheckinState('khoi dong da co IN');
   saRenderProfiles(true);
@@ -2731,8 +3116,28 @@ window.saUpdateUI = saUpdateUI;
 window.saEvaluate = saEvaluate;
 window.saRefreshDebug = saRefreshDebug;
 
+// GPS auto-control bridge
+installGpsV3Bridge();
+window.startBackgroundGps = startBackgroundGps;
+window.stopBackgroundGps = stopBackgroundGps;
+window.gpsAutoCheckin = gpsAutoCheckin;
+window.gpsAutoCheckout = gpsAutoCheckout;
+window.gpsCurrentPosition = typeof gpsCurrentPosition === 'function' ? gpsCurrentPosition : window.gpsCurrentPosition;
+window._processGpsPosition = _processGpsPosition;
+window._handleGpsError = _handleGpsError;
+window.startGeofencing = startGeofencing;
+window.stopGeofencing = stopGeofencing;
+window.ensureGpsAutoRunning = ensureGpsAutoRunning;
+window.gpsScheduleAutoStart = scheduleGpsAutoStart;
+window.gpsSetSmartAutoAttendance = gpsSetSmartAutoAttendance;
+window.GPS_BATTERY_PROFILES = GPS_BATTERY_PROFILES;
+
 // Constants
 window.SA_STATE = STATE;
+
+installGpsResumeHooks();
+installCapacitorGpsResumeHook();
+setTimeout(installCapacitorGpsResumeHook, 2000);
 
 // Init khi DOM sẵn sàng
 if(document.readyState === 'loading'){

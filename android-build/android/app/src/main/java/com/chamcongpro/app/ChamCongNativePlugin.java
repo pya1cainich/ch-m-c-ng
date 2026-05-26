@@ -188,6 +188,13 @@ public class ChamCongNativePlugin extends Plugin {
         intent.putExtra("body", body);
         intent.putExtra("id", id);
         intent.putExtra("channelId", notificationChannelForId(id));
+        // Truyền dateKey + job để NotificationReceiver validate ca trước khi hiện thông báo
+        String dateKey = call.getString("dateKey", "");
+        String job     = call.getString("job", "");
+        if (dateKey != null && !dateKey.isEmpty()) intent.putExtra("dateKey", dateKey);
+        if (job != null && !job.isEmpty())         intent.putExtra("job", job);
+        String extraData = call.getString("data", "");
+        if (extraData != null && !extraData.isEmpty()) intent.putExtra("data", extraData);
 
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -1091,6 +1098,29 @@ public class ChamCongNativePlugin extends Plugin {
         }
         JSObject ret = new JSObject();
         ret.put("openedSettings", true);
+        call.resolve(ret);
+    }
+
+    /**
+     * Đánh dấu ca làm việc đã checkout vào SharedPreferences "cc_open_shift_closed".
+     * NotificationReceiver đọc trước khi hiện thông báo nhắc ca mở — nếu đã đóng thì bỏ qua.
+     * Params: dateKey (String), job ("main" | "sub")
+     */
+    @PluginMethod
+    public void markOpenShiftClosed(PluginCall call) {
+        String dateKey = call.getString("dateKey", "");
+        String job     = call.getString("job", "main");
+        if (dateKey == null || dateKey.isEmpty()) { call.resolve(new JSObject()); return; }
+        String key = (job != null ? job : "main") + "_" + dateKey;
+        getContext()
+            .getSharedPreferences("cc_open_shift_closed", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(key, true)
+            .putLong(key + "_ts", System.currentTimeMillis())
+            .apply();
+        android.util.Log.d("NativePlugin", "markOpenShiftClosed: " + key);
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
         call.resolve(ret);
     }
 
