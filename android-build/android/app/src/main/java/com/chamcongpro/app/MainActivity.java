@@ -12,6 +12,8 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // Đăng ký plugin ChamCongNative TRƯỚC khi gọi super.onCreate
         registerPlugin(ChamCongNativePlugin.class);
+        // Đăng ký bộ não chấm công tự động mới
+        registerPlugin(AttendanceBrainPlugin.class);
         super.onCreate(savedInstanceState);
         // FIX GPS: cho phép navigator.geolocation hoạt động trong WebView
         enableWebViewGeolocation();

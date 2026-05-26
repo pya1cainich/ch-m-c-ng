@@ -568,6 +568,20 @@ function attendanceSetIn(rec,dateKey,timeStr,ts){
   rec.in=timeStr;
   const n=_attValidTs(ts)||_attTsFromTime(dateKey,timeStr,0);
   if(n)rec.checkInAt=n;
+  try{
+    if(typeof window!=='undefined' && typeof window.gpsOnCheckinSaved==='function'){
+      const day=attData&&attData[dateKey];
+      const isSub=!!(day&&day.sub&&day.sub===rec);
+      const isMain=!!(day&&day===rec);
+      if(isMain||isSub){
+        window.gpsOnCheckinSaved({
+          dateKey:String(dateKey||''),
+          mainIn:isMain,
+          subIn:isSub
+        });
+      }
+    }
+  }catch(e){}
 }
 function attendanceSetOut(rec,dateKey,timeStr,ts){
   if(!rec)return;
@@ -575,6 +589,20 @@ function attendanceSetOut(rec,dateKey,timeStr,ts){
   const inTs=attendanceCheckInAt(rec,dateKey);
   const n=_attValidTs(ts)||_attTsFromTime(dateKey,timeStr,inTs);
   if(n)rec.checkOutAt=n;
+  try{
+    if(typeof window!=='undefined' && typeof window.gpsOnManualCheckoutSaved==='function'){
+      const day=attData&&attData[dateKey];
+      const isSub=!!(day&&day.sub&&day.sub===rec);
+      const isMain=!!(day&&day===rec);
+      if(isMain||isSub){
+        window.gpsOnManualCheckoutSaved({
+          dateKey:String(dateKey||''),
+          mainOut:isMain,
+          subOut:isSub
+        });
+      }
+    }
+  }catch(e){}
 }
 function attendanceWorkedHours(rec,dateKey){
   if(!rec||!rec.in||!rec.out)return null;
@@ -2952,6 +2980,8 @@ function closeDayPanel() {
 
 /** Lưu trạng thái + giờ + ghi chú cho ngày được chọn */
 function saveDayPanel() {
+  let manualMainOutSaved = false;
+  let manualSubOutSaved = false;
   if(!_daySelType) {
     delete attData[_dayKey];
   } else {
@@ -2964,6 +2994,7 @@ function saveDayPanel() {
       else attData[_dayKey].in = inv;
       if(typeof attendanceSetOut==='function')attendanceSetOut(attData[_dayKey],_dayKey,outv);
       else attData[_dayKey].out = outv;
+      manualMainOutSaved = true;
     } else {
       delete attData[_dayKey].in;
       delete attData[_dayKey].out;
@@ -2986,6 +3017,7 @@ function saveDayPanel() {
         if(subOut){
           if(typeof attendanceSetOut==='function')attendanceSetOut(attData[_dayKey].sub,_dayKey,subOut);
           else attData[_dayKey].sub.out = subOut;
+          manualSubOutSaved = true;
         }
       } else {
         delete attData[_dayKey].sub;
@@ -2993,6 +3025,15 @@ function saveDayPanel() {
     }
   }
   saveAtt();
+  if((manualMainOutSaved || manualSubOutSaved) && typeof window.gpsOnManualCheckoutSaved === 'function'){
+    try{
+      window.gpsOnManualCheckoutSaved({
+        dateKey: _dayKey,
+        mainOut: manualMainOutSaved,
+        subOut: manualSubOutSaved
+      });
+    }catch(e){}
+  }
   closeDayPanel();
   renderCalBig();
   renderHomeStats();
@@ -5149,6 +5190,10 @@ function init(){
       startGeofencing();
     }
   }
+  // Restore open-shift reminders (chỉ chạy 1 lần khi app start, không chạy trong GPS poll)
+  setTimeout(function(){
+    if(typeof gpsRestoreOpenShiftReminders === 'function') gpsRestoreOpenShiftReminders();
+  }, 2000);
   // Check if first time
   if(!userData.name){
     goScreen('screenOB');

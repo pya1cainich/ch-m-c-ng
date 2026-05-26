@@ -1450,7 +1450,31 @@ function gpsSyncNativeNow(){
 
   try{
     if(window.ccNative && window.ccNative.syncNativeGps){
-      window.ccNative.syncNativeGps(_gpsData).catch(() => {});
+      window.ccNative.syncNativeGps(_gpsData).then(function(res){
+        if(!res || !res.started) return;
+        // Nhắc user bật battery optimization nếu chưa whitelist — nguyên nhân #1
+        // khiến service GPS chết trên MIUI/Samsung khi tắt app một lúc
+        if(res.needBatteryPrompt && !window._batteryPromptShownThisSession){
+          window._batteryPromptShownThisSession = true;
+          setTimeout(function(){
+            if(typeof openNativePermissionSetting === 'function'){
+              openNativePermissionSetting('battery');
+            }
+          }, 1500);
+        }
+        // Nhắc user cấp SCHEDULE_EXACT_ALARM nếu chưa có (Android 12+) —
+        // không có quyền này, alarm restart không fire → service không tự khôi phục
+        if(res.needExactAlarmPrompt && !window._exactAlarmPromptShownThisSession){
+          window._exactAlarmPromptShownThisSession = true;
+          setTimeout(function(){
+            try{
+              var plugin = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.ChamCongNative);
+              if(plugin && plugin.requestExactAlarmPermission) plugin.requestExactAlarmPermission();
+              else if(window.ccNative && window.ccNative.requestExactAlarmPermission) window.ccNative.requestExactAlarmPermission();
+            }catch(e){}
+          }, 3000);
+        }
+      }).catch(function(){});
     }
   }catch(e){}
   return cfg;
@@ -1804,6 +1828,8 @@ var GPS_DEBOUNCE_OUT = 5;
 var GPS_NEW_CYCLE_WAIT_MS = 8 * 60 * 60 * 1000;
 var GPS_OPEN_SHIFT_CONFIRM_MS = 20 * 60 * 60 * 1000;
 var GPS_OPEN_SHIFT_PROMPT_COOLDOWN_MS = 5 * 60 * 1000;
+// Qua ngày nhưng chưa checkout: chỉ cho mở vòng mới sau 23h55 từ lúc check-in cũ.
+var GPS_OPEN_SHIFT_NEXT_DAY_UNLOCK_MS = ((23 * 60) + 55) * 60 * 1000;
 var GPS_POLL_SCHEDULE = {
   BUFFER_ZONE: 3000,
   NEAR: 5000,
@@ -1824,6 +1850,13 @@ var _gpsTrail         = [];
 var _gpsLastOutsideAt = 0;
 var _gpsBgWatchId     = null;
 var _gpsOpenShiftPromptTs = { main: 0, sub: 0 };
+var _gpsOpenShiftBannerTs = { main: 0, sub: 0 };
+var GPS_OPEN_SHIFT_NOTICE_STORE_KEY = 'cp22_open_shift_notice_once';
+var GPS_OPEN_SHIFT_REMINDER_STORE_KEY = 'cp22_open_shift_reminders_v1';
+var GPS_OPEN_SHIFT_REMINDER_AFTER_MS = 20 * 60 * 60 * 1000;
+var GPS_OPEN_SHIFT_REMINDER_ID_BASE = 52000;
+var _gpsOpenShiftNoticeState = null;
+var _gpsOpenShiftReminderState = null;
 
 function _addGpsTrail(entry){
   try{
@@ -2015,14 +2048,54 @@ function gpsFindOpenShiftInfo(jobKey){
   return best;
 }
 
+function gpsIsCrossedToNextDay(fromTs, toTs){
+  var a = new Date(Number(fromTs) || 0);
+  var b = new Date(Number(toTs) || 0);
+  if(!Number.isFinite(a.getTime()) || !Number.isFinite(b.getTime())) return false;
+  a.setHours(0, 0, 0, 0);
+  b.setHours(0, 0, 0, 0);
+  return b.getTime() > a.getTime();
+}
+
 function gpsCycleGuardInfo(jobKey, nowMs){
   var job = (jobKey === 'sub') ? 'sub' : 'main';
   var now = Number(nowMs);
   if(!Number.isFinite(now) || now <= 0) now = Date.now();
 
   var open = gpsFindOpenShiftInfo(job);
+  if(open && !gpsOpenShiftStillValid(open, job)){
+    gpsCancelOpenShiftRemindersByInfo({ job: job, open: open });
+    open = null;
+  }
   if(open){
     var elapsed = Math.max(0, now - open.ts);
+    var crossedDay = gpsIsCrossedToNextDay(open.ts, now);
+    if(crossedDay){
+      var overnightLeft = GPS_OPEN_SHIFT_NEXT_DAY_UNLOCK_MS - elapsed;
+      if(overnightLeft > 0){
+        return {
+          allow: false,
+          reason: 'open_shift_overnight_wait',
+          job: job,
+          open: open,
+          crossedDay: true,
+          elapsedMs: elapsed,
+          elapsedMin: Math.floor(elapsed / 60000),
+          leftMs: overnightLeft,
+          minutesLeft: Math.max(0, Math.ceil(overnightLeft / 60000))
+        };
+      }
+      return {
+        allow: true,
+        reason: 'open_shift_overnight_ready',
+        job: job,
+        open: open,
+        crossedDay: true,
+        elapsedMs: elapsed,
+        elapsedMin: Math.floor(elapsed / 60000),
+        minutesLeft: 0
+      };
+    }
     return {
       allow: false,
       reason: 'open_shift',
@@ -2070,11 +2143,20 @@ function gpsOpenShiftBlockText(info){
 }
 
 function gpsOpenShiftConfirmText(info){
-  var hours = Math.max(20, Math.floor((info.elapsedMs || 0) / 3600000));
+  // Hiển thị theo dữ liệu thực tế, không ép tối thiểu 20h để tránh cảnh báo sai cảm nhận.
+  var hours = Math.max(0, Math.floor((info.elapsedMs || 0) / 3600000));
   var jobLabel = (info && info.job === 'sub') ? 'job phụ' : 'job chính';
   var start = info && info.open ? (info.open.dateKey + ' ' + info.open.time) : 'ca trước';
   return 'Bạn chưa checkout ' + jobLabel + ' từ ' + start + '.\n\n'
     + 'Đã quá ' + hours + ' giờ. Xác nhận checkout ca cũ ngay bây giờ để mở ca mới?';
+}
+
+function gpsResolveOvernightCloseTs(info, nowMs){
+  if(!info || !info.open || !Number.isFinite(Number(info.open.ts))) return Number(nowMs) || Date.now();
+  var unlockAt = Number(info.open.ts) + GPS_OPEN_SHIFT_NEXT_DAY_UNLOCK_MS;
+  var now = Number(nowMs);
+  if(!Number.isFinite(now) || now <= 0) now = Date.now();
+  return Math.min(now, unlockAt > 0 ? unlockAt : now);
 }
 
 function gpsShouldPromptOpenShift(job, nowMs){
@@ -2085,6 +2167,388 @@ function gpsShouldPromptOpenShift(job, nowMs){
   if(last > 0 && (now - last) < GPS_OPEN_SHIFT_PROMPT_COOLDOWN_MS) return false;
   _gpsOpenShiftPromptTs[key] = now;
   return true;
+}
+
+function gpsShouldShowOpenShiftBanner(job, source, nowMs){
+  var key = job === 'sub' ? 'sub' : 'main';
+  var src = String(source || '');
+  // Manual check-in luôn được hiện banner để user biết lý do bị chặn.
+  if(src !== 'smart_attendance') return true;
+  // Auto check-in khi app ẩn: không bật banner nổi để tránh cảm giác "tự dưng báo".
+  try{
+    if(typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+  }catch(e){}
+  // Auto check-in khi app đang mở: giới hạn tần suất banner theo cooldown.
+  var now = Number(nowMs);
+  if(!Number.isFinite(now) || now <= 0) now = Date.now();
+  var last = Number(_gpsOpenShiftBannerTs[key] || 0);
+  if(last > 0 && (now - last) < GPS_OPEN_SHIFT_PROMPT_COOLDOWN_MS) return false;
+  _gpsOpenShiftBannerTs[key] = now;
+  return true;
+}
+
+function gpsGetOpenShiftNoticeState(){
+  if(_gpsOpenShiftNoticeState) return _gpsOpenShiftNoticeState;
+  var raw = null;
+  try{ raw = (typeof lsGet === 'function') ? lsGet(GPS_OPEN_SHIFT_NOTICE_STORE_KEY) : null; }catch(e){}
+  _gpsOpenShiftNoticeState = (raw && typeof raw === 'object') ? raw : { main: {}, sub: {} };
+  if(!_gpsOpenShiftNoticeState.main) _gpsOpenShiftNoticeState.main = {};
+  if(!_gpsOpenShiftNoticeState.sub) _gpsOpenShiftNoticeState.sub = {};
+  return _gpsOpenShiftNoticeState;
+}
+
+function gpsSaveOpenShiftNoticeState(){
+  try{
+    if(typeof lsSet === 'function'){
+      lsSet(GPS_OPEN_SHIFT_NOTICE_STORE_KEY, gpsGetOpenShiftNoticeState());
+    }
+  }catch(e){}
+}
+
+function gpsGetOpenShiftReminderState(){
+  if(_gpsOpenShiftReminderState) return _gpsOpenShiftReminderState;
+  var raw = null;
+  try{ raw = (typeof lsGet === 'function') ? lsGet(GPS_OPEN_SHIFT_REMINDER_STORE_KEY) : null; }catch(e){}
+  _gpsOpenShiftReminderState = (raw && typeof raw === 'object') ? raw : { main: {}, sub: {} };
+  if(!_gpsOpenShiftReminderState.main) _gpsOpenShiftReminderState.main = {};
+  if(!_gpsOpenShiftReminderState.sub) _gpsOpenShiftReminderState.sub = {};
+  return _gpsOpenShiftReminderState;
+}
+
+function gpsSaveOpenShiftReminderState(){
+  try{
+    if(typeof lsSet === 'function'){
+      lsSet(GPS_OPEN_SHIFT_REMINDER_STORE_KEY, gpsGetOpenShiftReminderState());
+    }
+  }catch(e){}
+}
+
+function gpsOpenShiftReminderIdSet(info){
+  var key = gpsOpenShiftNoticeId(info);
+  if(!key) return null;
+  var hash = 0;
+  for(var i = 0; i < key.length; i++){
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash |= 0;
+  }
+  var idx = Math.abs(hash) % 9000;
+  var base = GPS_OPEN_SHIFT_REMINDER_ID_BASE + (idx * 3);
+  return { n20: base, weekend: base + 1, monthEnd: base + 2 };
+}
+
+/** Lấy giờ ra ca dự kiến từ cấu hình shift của user ("17:00" fallback) */
+function _gpsGetExpectedOutTime(){
+  try{
+    var ud = window.userData || {};
+    var shiftTimes = ud.shiftTimes || [];
+    var currentShift = (typeof window.getEffectiveCurrentShift === 'function')
+      ? window.getEffectiveCurrentShift()
+      : (ud.currentShift || 1);
+    var shiftIdx = Math.max(0, (Number(currentShift) || 1) - 1);
+    return (shiftTimes[shiftIdx] && shiftTimes[shiftIdx].out) || '17:00';
+  }catch(e){ return '17:00'; }
+}
+
+/** Tính timestamp của "HH:MM + offsetMin" trên ngày date cho trước */
+function _gpsTimestampAtTimeOnDate(date, timeStr, offsetMin){
+  try{
+    var parts = String(timeStr || '17:00').split(':');
+    var h = parseInt(parts[0], 10) || 17;
+    var m = (parseInt(parts[1], 10) || 0) + (offsetMin || 0);
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate(), h, m, 0, 0).getTime();
+  }catch(e){ return 0; }
+}
+
+/** Cuối tuần (Thứ Bảy) kể từ openTs, lúc giờ outTime + offsetMin */
+function gpsEndOfWeekTsAt(openTs, timeStr, offsetMin){
+  var src = new Date(Number(openTs) || Date.now());
+  var d = new Date(src.getTime());
+  var addDays = (6 - d.getDay() + 7) % 7; // 6 = Thứ Bảy
+  d.setDate(d.getDate() + addDays);
+  var parts = String(timeStr || '17:00').split(':');
+  d.setHours(parseInt(parts[0],10)||17, (parseInt(parts[1],10)||0)+(offsetMin||0), 0, 0);
+  if(d.getTime() <= src.getTime()) d.setDate(d.getDate() + 7);
+  return d.getTime();
+}
+
+/** Ngày cuối tháng kể từ openTs, lúc giờ outTime + offsetMin */
+function gpsEndOfMonthTsAt(openTs, timeStr, offsetMin){
+  var src = new Date(Number(openTs) || Date.now());
+  var parts = String(timeStr || '17:00').split(':');
+  var h = parseInt(parts[0],10)||17;
+  var m = (parseInt(parts[1],10)||0)+(offsetMin||0);
+  var d = new Date(src.getFullYear(), src.getMonth() + 1, 0, h, m, 0, 0);
+  if(d.getTime() <= src.getTime()){
+    d = new Date(src.getFullYear(), src.getMonth() + 2, 0, h, m, 0, 0);
+  }
+  return d.getTime();
+}
+
+function gpsReminderPlanForOpenShift(info, nowMs){
+  if(!info || !info.open || !Number.isFinite(Number(info.open.ts))) return null;
+  var now = Number(nowMs);
+  if(!Number.isFinite(now) || now <= 0) now = Date.now();
+  var minFuture = now + 60 * 1000;
+
+  var outTime = _gpsGetExpectedOutTime(); // vd: "17:00" — dùng cho weekend/monthEnd
+  var openTs = Number(info.open.ts);
+
+  // n20: đúng 20 giờ sau lúc check-in
+  var t20 = openTs + GPS_OPEN_SHIFT_REMINDER_AFTER_MS;
+  // weekend: outTime + 15 phút Chủ nhật tuần đó
+  var tWeekend = gpsEndOfWeekTsAt(openTs, outTime, 15);
+  // monthEnd: outTime + 15 phút ngày cuối tháng
+  var tMonthEnd = gpsEndOfMonthTsAt(openTs, outTime, 15);
+
+  // Nếu tất cả đã qua, dùng now + 2 phút (để notification thực sự fire được)
+  var catchUp = now + 2 * 60 * 1000;
+  return {
+    n20:      t20      > minFuture ? t20      : catchUp,
+    weekend:  tWeekend > minFuture ? tWeekend : catchUp,
+    monthEnd: tMonthEnd > minFuture ? tMonthEnd : catchUp
+  };
+}
+
+/** extra (tuỳ chọn): { dateKey, job } — dùng để validate trước khi fire khi app tắt */
+function gpsScheduleNativeReminder(id, title, body, atMs, extra){
+  try{
+    if(!window.ccNative || !window.ccNative.isNative || typeof window.ccNative.scheduleNotification !== 'function') return;
+    var t = new Date(Number(atMs) || 0);
+    if(!Number.isFinite(t.getTime())) return;
+    var p = window.ccNative.scheduleNotification(title, body, id, t, extra || null);
+    if(p && typeof p.catch === 'function') p.catch(function(){});
+  }catch(e){}
+}
+
+function gpsCancelNativeReminder(id){
+  try{
+    if(!window.ccNative || !window.ccNative.isNative || typeof window.ccNative.cancelNotification !== 'function') return;
+    var p = window.ccNative.cancelNotification(Number(id));
+    if(p && typeof p.catch === 'function') p.catch(function(){});
+  }catch(e){}
+}
+
+function gpsScheduleOpenShiftReminders(info, nowMs){
+  if(!info || !info.open) return;
+  if(!gpsOpenShiftStillValid(info.open, info.job)) return;
+  var ids = gpsOpenShiftReminderIdSet(info);
+  var plan = gpsReminderPlanForOpenShift(info, nowMs);
+  var noticeId = gpsOpenShiftNoticeId(info);
+  if(!ids || !plan || !noticeId) return;
+
+  var st = gpsGetOpenShiftReminderState();
+  var job = info.job === 'sub' ? 'sub' : 'main';
+  if(!st[job]) st[job] = {};
+
+  var prev = st[job][noticeId] || {};
+  if(prev.openTs === Number(info.open.ts)
+    && prev.n20At === plan.n20
+    && prev.weekendAt === plan.weekend
+    && prev.monthEndAt === plan.monthEnd){
+    return;
+  }
+
+  var label = job === 'sub' ? 'job phụ' : 'job chính';
+  var start = String(info.open.dateKey || '') + ' ' + String(info.open.time || '');
+  // Truyền extra {dateKey, job} để NotificationReceiver có thể validate khi app tắt
+  var extra = { dateKey: info.open.dateKey || '', job: job };
+  gpsScheduleNativeReminder(ids.n20, 'Chưa checkout ca', 'Đã 20 giờ từ lúc vào ' + label + ' (' + start + '). Mở app để checkout.', plan.n20, extra);
+  gpsScheduleNativeReminder(ids.weekend, 'Cuối tuần chưa checkout', label + ' từ ' + start + ' vẫn chưa checkout. Vui lòng cập nhật.', plan.weekend, extra);
+  gpsScheduleNativeReminder(ids.monthEnd, 'Cuối tháng chưa checkout', label + ' từ ' + start + ' vẫn đang mở. Vui lòng chốt ca.', plan.monthEnd, extra);
+
+  st[job][noticeId] = {
+    openTs: Number(info.open.ts) || 0,
+    dateKey: info.open.dateKey || '',
+    n20Id: ids.n20,
+    weekendId: ids.weekend,
+    monthEndId: ids.monthEnd,
+    n20At: plan.n20,
+    weekendAt: plan.weekend,
+    monthEndAt: plan.monthEnd,
+    scheduledAt: Date.now()
+  };
+  gpsSaveOpenShiftReminderState();
+}
+
+function gpsCancelOpenShiftRemindersByInfo(info){
+  if(!info || !info.open) return;
+  var noticeId = gpsOpenShiftNoticeId(info);
+  if(!noticeId) return;
+  var st = gpsGetOpenShiftReminderState();
+  var job = info.job === 'sub' ? 'sub' : 'main';
+  var dateKey = info.open.dateKey || '';
+  var entry = st[job] && st[job][noticeId];
+  if(entry){
+    gpsCancelNativeReminder(entry.n20Id);
+    gpsCancelNativeReminder(entry.weekendId);
+    gpsCancelNativeReminder(entry.monthEndId);
+    delete st[job][noticeId];
+    gpsSaveOpenShiftReminderState();
+  } else {
+    var ids = gpsOpenShiftReminderIdSet(info);
+    if(ids){
+      gpsCancelNativeReminder(ids.n20);
+      gpsCancelNativeReminder(ids.weekend);
+      gpsCancelNativeReminder(ids.monthEnd);
+    }
+  }
+  // Đánh dấu ca đã đóng vào SharedPreferences để NotificationReceiver validate khi app tắt
+  if(dateKey && window.ccNative && typeof window.ccNative.markOpenShiftClosed === 'function'){
+    try{ window.ccNative.markOpenShiftClosed(dateKey, job); }catch(e){}
+  }
+}
+
+function gpsCancelOpenShiftRemindersByDate(jobKey, dateKey){
+  var st = gpsGetOpenShiftReminderState();
+  var job = jobKey === 'sub' ? 'sub' : 'main';
+  var bucket = st[job] || {};
+  var prefix = job + '|' + String(dateKey || '') + '|';
+  Object.keys(bucket).forEach(function(id){
+    if(String(id).indexOf(prefix) !== 0) return;
+    var e = bucket[id] || {};
+    gpsCancelNativeReminder(e.n20Id);
+    gpsCancelNativeReminder(e.weekendId);
+    gpsCancelNativeReminder(e.monthEndId);
+    delete bucket[id];
+  });
+  st[job] = bucket;
+  gpsSaveOpenShiftReminderState();
+  // Đánh dấu ca đã đóng vào SharedPreferences để NotificationReceiver validate khi app tắt
+  if(dateKey && window.ccNative && typeof window.ccNative.markOpenShiftClosed === 'function'){
+    try{ window.ccNative.markOpenShiftClosed(String(dateKey), job); }catch(e){}
+  }
+}
+
+function gpsOpenShiftNoticeId(info){
+  if(!info || !info.open) return '';
+  return [
+    info.job || 'main',
+    info.open.dateKey || '',
+    info.open.time || '',
+    Math.floor(Number(info.open.ts || 0) / 60000)
+  ].join('|');
+}
+
+function gpsHasSeenOpenShiftNotice(info){
+  var id = gpsOpenShiftNoticeId(info);
+  if(!id) return false;
+  var st = gpsGetOpenShiftNoticeState();
+  var job = (info && info.job === 'sub') ? 'sub' : 'main';
+  return !!(st[job] && st[job][id]);
+}
+
+function gpsMarkOpenShiftNotice(info, nowMs){
+  var id = gpsOpenShiftNoticeId(info);
+  if(!id) return;
+  var st = gpsGetOpenShiftNoticeState();
+  var job = (info && info.job === 'sub') ? 'sub' : 'main';
+  if(!st[job]) st[job] = {};
+  st[job][id] = Number(nowMs) > 0 ? Number(nowMs) : Date.now();
+  gpsSaveOpenShiftNoticeState();
+}
+
+function gpsRecByJobOnDate(jobKey, dateKey){
+  var day = null;
+  if(typeof getAttRecordByKey === 'function') day = getAttRecordByKey(dateKey);
+  else day = attData ? attData[dateKey] : null;
+  if(!day) return null;
+  return jobKey === 'sub' ? (day.sub || null) : day;
+}
+
+function gpsHasCheckoutAfterTs(jobKey, afterTs){
+  var useSub = jobKey === 'sub';
+  var baseTs = Number(afterTs);
+  if(!Number.isFinite(baseTs) || baseTs <= 0 || !attData) return false;
+  var found = false;
+  Object.keys(attData).forEach(function(k){
+    if(found) return;
+    var day = attData[k];
+    var rec = useSub ? (day && day.sub) : day;
+    var outTs = gpsCheckoutTsForRecord(k, rec);
+    if(outTs > baseTs) found = true;
+  });
+  return found;
+}
+
+function gpsOpenShiftStillValid(openInfo, jobKey){
+  if(!openInfo || !openInfo.dateKey) return false;
+  var rec = gpsRecByJobOnDate(jobKey, openInfo.dateKey);
+  if(!rec || !rec.in || rec.out) return false;
+  if(gpsHasCheckoutAfterTs(jobKey, openInfo.ts)) return false;
+  return true;
+}
+
+function gpsShouldNotifyOpenShiftOnce(info, source, nowMs){
+  if(!info || !info.open) return true;
+  var now = Number(nowMs);
+  if(!Number.isFinite(now) || now <= 0) now = Date.now();
+  // Chỉ nhắc khi đã sang ngày mới so với ca mở.
+  if(!gpsIsCrossedToNextDay(info.open.ts, now)) return false;
+  if(gpsHasSeenOpenShiftNotice(info)) return false;
+  if(!gpsShouldShowOpenShiftBanner(info.job, source, now)) return false;
+  gpsMarkOpenShiftNotice(info, now);
+  return true;
+}
+
+function gpsClearOpenShiftNoticeByDate(jobKey, dateKey){
+  var st = gpsGetOpenShiftNoticeState();
+  var job = (jobKey === 'sub') ? 'sub' : 'main';
+  var bucket = st[job] || {};
+  var prefix = job + '|' + String(dateKey || '') + '|';
+  Object.keys(bucket).forEach(function(id){
+    if(String(id).indexOf(prefix) === 0){
+      delete bucket[id];
+    }
+  });
+  st[job] = bucket;
+}
+
+function gpsHideOpenShiftBannerNow(){
+  var banner = document.getElementById('gpsBanner');
+  if(!banner) return;
+  var msg = String(banner.textContent || '').toLowerCase();
+  if(msg.indexOf('chưa checkout') >= 0 || msg.indexOf('23h55') >= 0 || msg.indexOf('ca cũ') >= 0){
+    banner.style.opacity = '0';
+  }
+}
+
+function gpsOnCheckinSaved(payload){
+  var p = payload || {};
+  var dateKey = String(p.dateKey || '');
+  if(!dateKey) return;
+  var now = Date.now();
+  if(p.mainIn){
+    var openMain = gpsFindOpenShiftInfo('main');
+    if(openMain && openMain.dateKey === dateKey && gpsOpenShiftStillValid(openMain, 'main')){
+      gpsScheduleOpenShiftReminders({ job: 'main', open: openMain }, now);
+    }
+  }
+  if(p.subIn){
+    var openSub = gpsFindOpenShiftInfo('sub');
+    if(openSub && openSub.dateKey === dateKey && gpsOpenShiftStillValid(openSub, 'sub')){
+      gpsScheduleOpenShiftReminders({ job: 'sub', open: openSub }, now);
+    }
+  }
+}
+
+function gpsOnManualCheckoutSaved(payload){
+  var p = payload || {};
+  var dateKey = String(p.dateKey || '');
+  if(!dateKey) return;
+  if(p.mainOut){
+    gpsClearOpenShiftNoticeByDate('main', dateKey);
+    gpsCancelOpenShiftRemindersByDate('main', dateKey);
+    _gpsOpenShiftPromptTs.main = 0;
+    _gpsOpenShiftBannerTs.main = 0;
+  }
+  if(p.subOut){
+    gpsClearOpenShiftNoticeByDate('sub', dateKey);
+    gpsCancelOpenShiftRemindersByDate('sub', dateKey);
+    _gpsOpenShiftPromptTs.sub = 0;
+    _gpsOpenShiftBannerTs.sub = 0;
+  }
+  gpsSaveOpenShiftNoticeState();
+  gpsHideOpenShiftBannerNow();
 }
 
 function gpsCloseOpenShift(openInfo, closeMs){
@@ -2106,6 +2570,7 @@ function gpsCloseOpenShift(openInfo, closeMs){
   rec.type = rec.type || 'cm';
   rec.auto = true;
   rec.autoMethod = 'recover_open_shift';
+  gpsCancelOpenShiftRemindersByInfo({ job: openInfo.job, open: openInfo });
   saveAtt();
   if(typeof updateTodayStatusTime === 'function') updateTodayStatusTime();
   if(typeof renderHomeStats === 'function') renderHomeStats();
@@ -2114,8 +2579,22 @@ function gpsCloseOpenShift(openInfo, closeMs){
 
 function gpsEnsureCycleForCheckin(jobKey, opts){
   opts = opts || {};
+  var source = String(opts.source || '');
+  var isSmartAuto = source === 'smart_attendance';
   var info = gpsCycleGuardInfo(jobKey, opts.nowMs);
-  if(info.allow) return { allowed: true, reason: 'ok', info: info };
+  if(info.allow){
+    // Qua ngày đủ 23h55: KHÔNG tự động chốt ca cũ.
+    // Ca cũ để nguyên → user vào lịch tự sửa, 3 reminder vẫn chạy đúng.
+    // Chỉ hiện banner nhắc nhẹ, rồi cho phép check-in mới bình thường.
+    if(info.reason === 'open_shift_overnight_ready' && info.open){
+      if(opts.showBanner !== false && typeof showGpsBanner === 'function'
+        && gpsShouldShowOpenShiftBanner(info.job, opts.source, opts.nowMs)){
+        var jobLabelReady = (info.job === 'sub') ? 'job phụ' : 'job chính';
+        showGpsBanner('⚠️ ' + jobLabelReady + ' hôm qua chưa checkout. Vui lòng vào lịch để cập nhật.', '#F5A623');
+      }
+    }
+    return { allowed: true, reason: 'ok', info: info };
+  }
 
   if(info.reason === 'wait_8h'){
     if(opts.showBanner !== false && typeof showGpsBanner === 'function'){
@@ -2124,12 +2603,34 @@ function gpsEnsureCycleForCheckin(jobKey, opts){
     return { allowed: false, reason: 'wait_8h', minutesLeft: info.minutesLeft || 0, info: info };
   }
 
+  // Không schedule ở đây — hàm này chạy liên tục theo GPS poll.
+  // Reminder đã được lên lịch 1 lần duy nhất trong gpsOnCheckinSaved và gpsRestoreOpenShiftReminders.
+
+  if(info.reason === 'open_shift_overnight_wait'){
+    if(opts.showBanner !== false && typeof showGpsBanner === 'function'
+      && gpsShouldNotifyOpenShiftOnce(info, opts.source, opts.nowMs)){
+      var jobLabelWait = (info && info.job === 'sub') ? 'job phụ' : 'job chính';
+      showGpsBanner(
+        '⏳ ' + jobLabelWait + ' qua ngày nhưng chưa đủ 23h55 từ lúc vào ca cũ. Còn ' + (info.minutesLeft || 0) + ' phút.',
+        '#F5A623'
+      );
+    }
+    return { allowed: false, reason: 'open_shift_overnight_wait', minutesLeft: info.minutesLeft || 0, info: info };
+  }
+
   var blockText = gpsOpenShiftBlockText(info);
-  if(opts.showBanner !== false && typeof showGpsBanner === 'function'){
+  if(opts.showBanner !== false && typeof showGpsBanner === 'function'
+    && gpsShouldNotifyOpenShiftOnce(info, opts.source, opts.nowMs)){
     showGpsBanner(blockText, '#F5A623');
   }
   if(!info.needsLongOpenConfirm){
     return { allowed: false, reason: 'open_shift', info: info };
+  }
+
+  // Smart auto: không bật popup confirm để tránh cảnh báo "tự dưng" khi app foreground.
+  // Luồng manual vẫn giữ confirm đầy đủ.
+  if(isSmartAuto){
+    return { allowed: false, reason: 'open_shift_confirm_required', info: info };
   }
 
   if(opts.allowConfirm === false){
@@ -2181,102 +2682,6 @@ function showGpsBanner(msg, color){
   banner._timer = setTimeout(function(){ banner.style.opacity = '0'; }, 4000);
 }
 
-// ── Geofencing stubs — Smart Attendance tự quản lý GPS ───────────────────────
-function startGeofencing(){
-  // Smart attendance đang chạy → nhường hoàn toàn cho nó, không chạy song song
-  if(window._gpsData && window._gpsData.smartAttendanceMode && window._sa && window._sa.enabled) return;
-  // Chế độ GPS engine cũ không còn hỗ trợ — bật smartAttendanceMode để chấm công GPS
-  console.warn('[GPS] startGeofencing: chỉ hỗ trợ smartAttendanceMode. Bật Smart Attendance để dùng GPS.');
-}
-
-function stopGeofencing(options){
-  if(typeof saStopGps === 'function') try{ saStopGps(); }catch(e){}
-}
-
-function startBackgroundGps(){
-  // Native GPS được quản lý bởi smart-attendance — chỉ cần sync config
-  try{
-    if(window.ccNative && window.ccNative.syncNativeGps){
-      window.ccNative.syncNativeGps(_gpsData).catch(function(){});
-      _gpsBgWatchId = 'native';
-      window._gpsBgWatchId = 'native';
-      return true;
-    }
-  }catch(e){}
-  return false;
-}
-
-function stopBackgroundGps(){
-  _gpsBgWatchId = null;
-  window._gpsBgWatchId = null;
-  try{
-    var plugin = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.ChamCongNative;
-    if(plugin && plugin.stopNativeGps) plugin.stopNativeGps();
-  }catch(e){}
-}
-
-// Smart Attendance xử lý GPS position nội bộ — không cần làm gì ở đây
-function _processGpsPosition(pos){}
-
-function _handleGpsError(err){
-  _gpsErrorCount++;
-  console.warn('[GPS Error]', err && (err.code || err.message) || err);
-}
-
-function setGpsBatteryProfile(profile){
-  if(GPS_BATTERY_PROFILES[profile]) _gpsBatteryProfile = profile;
-}
-
-// ── Auto check-in / check-out — delegate sang Smart Attendance ────────────────
-function gpsAutoCheckin(){
-  if(typeof saDoCheckin === 'function'){ saDoCheckin('gps'); return; }
-  console.warn('[GPS] gpsAutoCheckin: saDoCheckin chưa sẵn sàng');
-}
-
-function gpsAutoCheckout(){
-  if(typeof saDoCheckout === 'function'){ saDoCheckout('gps'); return; }
-  console.warn('[GPS] gpsAutoCheckout: saDoCheckout chưa sẵn sàng');
-}
-
-// ── Public API (giữ interface cũ để capacitor-integration.js không crash) ─────
-window.gpsV3 = {
-  setActiveJob       : setActiveGpsJob,
-  getActiveLocation  : getActiveGpsLocation,
-  saveLocationForJob : saveGpsLocationForJob,
-  setBatteryProfile  : setGpsBatteryProfile,
-  getTrail           : function(){ return _gpsTrail.slice(); },
-  isInsidePolygon    : isInsidePolygon,
-  startBackground    : startBackgroundGps,
-  stopBackground     : stopBackgroundGps,
-  restart            : function(){
-    if(typeof saStopGps === 'function') try{ saStopGps(); }catch(e){}
-    if(typeof saEnable === 'function') setTimeout(function(){ saEnable(); }, 300);
-  },
-  getStats           : function(){
-    return { enabled: _gpsData && _gpsData.enabled, smartMode: true, batteryProfile: _gpsBatteryProfile };
-  }
-};
-
-window.startBackgroundGps      = startBackgroundGps;
-window.stopBackgroundGps       = stopBackgroundGps;
-window.gpsAutoCheckin          = gpsAutoCheckin;
-window.gpsAutoCheckout         = gpsAutoCheckout;
-window.gpsCurrentPosition      = gpsCurrentPosition;
-window._processGpsPosition     = _processGpsPosition;
-window._addGpsTrail            = _addGpsTrail;
-window.toggleGpsTightCompany   = toggleGpsTightCompany;
-window.gpsActiveRadius         = gpsActiveRadius;
-window.gpsFindLastCheckoutInfo = gpsFindLastCheckoutInfo;
-window.gpsFindOpenShiftInfo    = gpsFindOpenShiftInfo;
-window.gpsCycleGuardInfo       = gpsCycleGuardInfo;
-window.gpsEnsureCycleForCheckin = gpsEnsureCycleForCheckin;
-window.gpsCanStartNewAutoCycle = gpsCanStartNewAutoCycle;
-window._handleGpsError         = _handleGpsError;
-window.showGpsBanner           = showGpsBanner;
-window.startGeofencing         = startGeofencing;
-window.stopGeofencing          = stopGeofencing;
-window.GPS_BATTERY_PROFILES    = GPS_BATTERY_PROFILES;
-
 function gpsResolveRunnableLocation(){
   if(!_gpsData) return null;
   var loc = null;
@@ -2300,225 +2705,67 @@ function gpsResolveRunnableLocation(){
   _gpsData.radius = (typeof gpsLocationRadius === 'function') ? gpsLocationRadius(loc.radius) : (Number(loc.radius) || 15);
   return loc;
 }
-// ── Logic start GPS thực sự (gọi sau khi đã xác nhận plugin + quyền OK) ───────
-function _ensureGpsAutoRunningCore(reason){
-  try{
-    if(!_gpsData.enabled || !_gpsData.smartAttendanceMode){
-      _gpsData.enabled = true;
-      _gpsData.smartAttendanceMode = true;
-      gpsSetAutoAttendanceUi(true);
-      if(window.notifCfg){
-        notifCfg.n3 = true;
-        if(typeof saveNotif === 'function') saveNotif();
-      }
-      if(typeof saveGpsData === 'function') saveGpsData();
-      console.log('[GPS] auto-start smart attendance:', reason || 'startup');
-    }
-
-    if(_gpsData.smartAttendanceMode){
-      gpsSetAutoAttendanceUi(true);
-      if(typeof window.saEnable === 'function'){
-        if(!window._sa || !window._sa.enabled) window.saEnable();
-        else if(typeof window.saUpdateUI === 'function') window.saUpdateUI();
-      } else {
-        setTimeout(function(){
-          if(window._gpsData && window._gpsData.smartAttendanceMode && typeof window.saEnable === 'function'){
-            window.saEnable();
-          }
-        }, 800);
-      }
-      if(typeof gpsSyncNativeNow === 'function') gpsSyncNativeNow();
-      else if(window.ccNative && window.ccNative.syncNativeGps) window.ccNative.syncNativeGps(_gpsData).catch(function(){});
-      return true;
-    }
-
-    var loc = gpsResolveRunnableLocation();
-    if(!loc){
-      if(typeof updateGpsStatus === 'function') updateGpsStatus();
-      console.warn('[GPS] auto-start skipped: no saved location', reason || '');
-      return false;
-    }
-
-    try{
-      var btn = document.getElementById('togN3');
-      if(btn) btn.classList.add('on');
-      var card = document.getElementById('gpsSetupCard');
-      if(card) card.style.display = 'block';
-      if(window.notifCfg){
-        notifCfg.n3 = true;
-        if(typeof saveNotif === 'function') saveNotif();
-      }
-    }catch(e){}
-
-    if(typeof gpsSyncNativeNow === 'function') gpsSyncNativeNow();
-    else if(window.ccNative && window.ccNative.syncNativeGps) window.ccNative.syncNativeGps(_gpsData).catch(function(){});
-
-    if(!_gpsInterval && typeof startGeofencing === 'function'){
-      console.log('[GPS] auto-start geofence:', reason || 'ensure');
-      startGeofencing();
-    } else if(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform()
-      && _gpsBgWatchId !== 'native'
-      && typeof window.startBackgroundGps === 'function'){
-      window.startBackgroundGps();
-    }
-
-    if(typeof updateGpsStatus === 'function') updateGpsStatus();
-    return true;
-  }catch(e){
-    console.warn('[GPS] _ensureGpsAutoRunningCore failed:', e);
-    return false;
-  }
-}
-// ── Banner xin quyền GPS khi chưa được cấp ───────────────────────────────────
-function _gpsShowPermNeeded(reason){
-  var banner = document.getElementById('gpsPermNeededBanner');
-  if(!banner){
-    banner = document.createElement('div');
-    banner.id = 'gpsPermNeededBanner';
-    banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);'
-      + 'z-index:9998;width:calc(100% - 32px);max-width:360px;padding:14px 16px;'
-      + 'border-radius:16px;background:#1A2332;color:white;font-size:13px;font-weight:800;'
-      + 'font-family:Nunito,sans-serif;text-align:center;'
-      + 'box-shadow:0 8px 32px rgba(0,0,0,.35)';
-    document.body.appendChild(banner);
-  }
-  banner.innerHTML = '📍 Cần quyền vị trí để chấm công GPS tự động'
-    + '<br><button onclick="openNativePermissionSetting(\'location\')"'
-    + ' style="margin-top:10px;padding:8px 20px;border:0;border-radius:10px;'
-    + 'background:#0D9E75;color:white;font-size:13px;font-weight:800;'
-    + 'cursor:pointer;font-family:Nunito,sans-serif">Cấp quyền ngay</button>';
-  banner.style.display = 'block';
-  console.log('[GPS] permission needed, reason:', reason);
-}
-function _gpsHidePermNeeded(){
-  var banner = document.getElementById('gpsPermNeededBanner');
-  if(banner) banner.style.display = 'none';
-}
-function ensureGpsAutoRunning(reason){
-  try{
-    if(typeof loadGpsData === 'function') loadGpsData();
-    if(!_gpsData) return false;
-    if(window.__gpsManualOffThisSession) return false;
-
-    // ── Kiểm tra plugin + quyền GPS trước khi start (chỉ trong APK) ──────────
-    var isCapNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
-    if(isCapNative){
-      // ccNative chưa sẵn sàng → defer, sẽ được gọi lại bởi 'ccNative-ready'
-      if(!window.ccNative) return false;
-      // Plugin ChamCongNative phải tồn tại
-      if(!window.ccNative.plugins || !window.ccNative.plugins.CN){
-        _gpsShowPermNeeded('plugin-not-ready');
-        return false;
-      }
-      // Kiểm tra quyền vị trí async
-      window.ccNative.checkLocationPermission().then(function(perm){
-        var granted = !!(perm && (perm.location === 'granted'
-          || perm.fineLocation === 'granted'
-          || perm.coarseLocation === 'granted'));
-        if(granted){
-          _gpsHidePermNeeded();
-          _ensureGpsAutoRunningCore(reason);
-        } else {
-          _gpsShowPermNeeded('denied');
-        }
-      }).catch(function(){
-        // Không check được → cứ start (fallback an toàn)
-        _ensureGpsAutoRunningCore(reason);
-      });
-      return true; // async đang xử lý
-    }
-
-    // Browser/non-native → không cần check permission
-    _ensureGpsAutoRunningCore(reason);
-    return true;
-  }catch(e){
-    console.warn('[GPS] ensureGpsAutoRunning failed:', e);
-    return false;
-  }
-}
-
-function scheduleGpsAutoStart(reason){
-  [0, 700, 2000, 5000].forEach(function(delay){
-    setTimeout(function(){ ensureGpsAutoRunning((reason || 'auto') + '+' + delay); }, delay);
-  });
-}
-
 window.gpsResolveRunnableLocation = gpsResolveRunnableLocation;
-window.ensureGpsAutoRunning = ensureGpsAutoRunning;
-window.gpsScheduleAutoStart = scheduleGpsAutoStart;
+window._addGpsTrail = _addGpsTrail;
+window.toggleGpsTightCompany = toggleGpsTightCompany;
+window.gpsActiveRadius = gpsActiveRadius;
+window.gpsFindLastCheckoutInfo = gpsFindLastCheckoutInfo;
+window.gpsFindOpenShiftInfo = gpsFindOpenShiftInfo;
+window.gpsCycleGuardInfo = gpsCycleGuardInfo;
+window.gpsEnsureCycleForCheckin = gpsEnsureCycleForCheckin;
+window.gpsCanStartNewAutoCycle = gpsCanStartNewAutoCycle;
+window.gpsOnCheckinSaved = gpsOnCheckinSaved;
+window.gpsOnManualCheckoutSaved = gpsOnManualCheckoutSaved;
 
-function gpsSetAutoAttendanceUi(enabled){
-  var on = !!enabled;
-  var gpsBtn = document.getElementById('togN3');
-  if(gpsBtn) gpsBtn.classList.toggle('on', on);
-  var saBtn = document.getElementById('togSA');
-  if(saBtn) saBtn.classList.toggle('on', on);
-  var card = document.getElementById('gpsSetupCard');
-  if(card) card.style.display = on ? 'block' : 'none';
-  if(window.notifCfg) notifCfg.n3 = on;
-}
-
-function gpsSetSmartAutoAttendance(enabled, reason){
-  var on = !!enabled;
-  window.__gpsManualOffThisSession = !on;
-  if(typeof loadGpsData === 'function') loadGpsData();
-  _gpsData.enabled = on;
-  _gpsData.smartAttendanceMode = on;
-  gpsSetAutoAttendanceUi(on);
-
-  if(on){
-    if(typeof window.saEnable === 'function'){
-      window.saEnable();
-    } else {
-      setTimeout(function(){
-        if(window._gpsData && window._gpsData.smartAttendanceMode && typeof window.saEnable === 'function'){
-          window.saEnable();
-        }
-      }, 800);
+/**
+ * Xem lại toàn bộ reminder đang chờ trong storage.
+ * - Ca đã checkout / không còn open → huỷ hết 3 thông báo của ca đó ngay lập tức.
+ * - Ca vẫn đang mở → giữ nguyên.
+ * Gọi mỗi khi app lên foreground hoặc boot để đảm bảo không bắn thông báo thừa.
+ */
+function gpsValidateOpenShiftReminders(){
+  ['main','sub'].forEach(function(job){
+    var st = gpsGetOpenShiftReminderState();
+    var bucket = st[job] || {};
+    var changed = false;
+    Object.keys(bucket).forEach(function(noticeId){
+      var e = bucket[noticeId] || {};
+      // Tái tạo openInfo tối giản để kiểm tra validity
+      var openInfo = { dateKey: e.dateKey || '', ts: e.openTs || 0 };
+      if(!openInfo.dateKey || !openInfo.ts) return;
+      if(!gpsOpenShiftStillValid(openInfo, job)){
+        // Dữ liệu đã cập nhật (checkout) → huỷ cả 3 thông báo
+        gpsCancelNativeReminder(e.n20Id);
+        gpsCancelNativeReminder(e.weekendId);
+        gpsCancelNativeReminder(e.monthEndId);
+        delete bucket[noticeId];
+        changed = true;
+      }
+    });
+    if(changed){
+      st[job] = bucket;
+      gpsSaveOpenShiftReminderState();
     }
-  } else {
-    if(typeof window.saDisable === 'function') window.saDisable();
-    if(typeof stopGeofencing === 'function') stopGeofencing();
-  }
-
-  if(typeof saveNotif === 'function') saveNotif();
-  if(typeof saveGpsData === 'function') saveGpsData();
-  if(typeof updateGpsStatus === 'function') updateGpsStatus();
-  _addGpsTrail({type:'SMART_AUTO_TOGGLE', enabled:on, reason:reason || 'toggle'});
-  return true;
-}
-
-window.gpsSetSmartAutoAttendance = gpsSetSmartAutoAttendance;
-
-function installGpsResumeHooks(){
-  if(window.__gpsAutoStartHooksInstalled) return;
-  window.__gpsAutoStartHooksInstalled = true;
-  if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', function(){ scheduleGpsAutoStart('dom-ready'); });
-  } else {
-    scheduleGpsAutoStart('dom-ready');
-  }
-  window.addEventListener('focus', function(){ setTimeout(function(){ ensureGpsAutoRunning('window-focus'); }, 250); });
-  document.addEventListener('visibilitychange', function(){
-    if(!document.hidden) setTimeout(function(){ ensureGpsAutoRunning('visible'); }, 250);
   });
 }
+window.gpsValidateOpenShiftReminders = gpsValidateOpenShiftReminders;
 
-function installCapacitorGpsResumeHook(){
-  if(window.__gpsCapacitorResumeHookInstalled) return;
-  var App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
-  if(!App || !App.addListener) return;
-  window.__gpsCapacitorResumeHookInstalled = true;
-  try{
-    App.addListener('appStateChange', function(state){
-      if(state && state.isActive) setTimeout(function(){ ensureGpsAutoRunning('appState-active'); }, 250);
-    });
-  }catch(e){}
+/**
+ * Gọi 1 lần khi app khởi động:
+ * 1. Huỷ reminder của các ca đã đóng (validate)
+ * 2. Lên lịch lại cho ca đang còn mở (nếu chưa có)
+ */
+function gpsRestoreOpenShiftReminders(){
+  gpsValidateOpenShiftReminders(); // bước 1: dọn stale trước
+  var now = Date.now();
+  ['main','sub'].forEach(function(job){
+    var open = gpsFindOpenShiftInfo(job);
+    if(!open || !gpsOpenShiftStillValid(open, job)) return;
+    gpsScheduleOpenShiftReminders({ job: job, open: open }, now); // bước 2: restore nếu cần
+  });
 }
-
-installGpsResumeHooks();
-installCapacitorGpsResumeHook();
-setTimeout(installCapacitorGpsResumeHook, 2000);
+window.gpsRestoreOpenShiftReminders = gpsRestoreOpenShiftReminders;
+window.showGpsBanner = showGpsBanner;
 // Note: _gpsData, _gpsBgWatchId, _gpsLastPosition, _gpsPositionHistory, _gpsBatteryProfile
 // are already exposed automatically via top-level `var` declarations.
 // We DON'T redefine them as accessors (would throw "Cannot redefine property").
@@ -3181,10 +3428,6 @@ doExport = function(){
   */
   var oldSubIn=window._doCheckinSub; window._doCheckinSub=function(){if(typeof oldSubIn==='function')oldSubIn(); markSubGps('in');};
   var oldSubOut=window._doCheckoutSub; window._doCheckoutSub=function(){if(typeof oldSubOut==='function')oldSubOut(); markSubGps('out');};
-  var oldGpsAutoIn=window.gpsAutoCheckin; window.gpsAutoCheckin=function(){ensureGpsV221(); if((_gpsData.activeJob||'main')==='sub'){var t=new Date();t.setMinutes(t.getMinutes()-((typeof _gpsCheckinMinus==='function')?_gpsCheckinMinus():5));var k=typeof dateKeyFromDate==='function'?dateKeyFromDate(t):(t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0'));if(!attData[k])attData[k]={type:'cm'};if(!attData[k].sub)attData[k].sub={type:'cm'};if(!attData[k].sub.in){var hm=fmtTime(t);attData[k].sub.type='cm';if(typeof attendanceSetIn==='function')attendanceSetIn(attData[k].sub,k,hm,t.getTime());else{attData[k].sub.in=hm;attData[k].sub.checkInAt=t.getTime();}attData[k].sub.auto=true;saveAtt();renderHomeStats();var subName=userData.subJob?.name||gps221JobName('sub');var el=document.getElementById('lastIn');if(el)el.textContent='GPS 💼 '+subName+' '+hm;if(typeof updateTodayStatusTime==='function')updateTodayStatusTime();if(typeof showGpsBanner==='function')showGpsBanner(gps221Tpl('autoIn',{time:hm}),'#7B5EA7');}return;} if(typeof oldGpsAutoIn==='function')oldGpsAutoIn();};
-  var oldGpsAutoOut=window.gpsAutoCheckout; window.gpsAutoCheckout=function(){ensureGpsV221(); if((_gpsData.activeJob||'main')==='sub'){var t=new Date();t.setMinutes(t.getMinutes()-((typeof _gpsCheckoutMinus==='function')?_gpsCheckoutMinus():75));var k=typeof dateKeyFromDate==='function'?dateKeyFromDate(t):(t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0'));if(attData[k]&&attData[k].sub&&attData[k].sub.in&&!attData[k].sub.out){var hm=fmtTime(t);if(typeof attendanceSetOut==='function')attendanceSetOut(attData[k].sub,k,hm,t.getTime());else{attData[k].sub.out=hm;attData[k].sub.checkOutAt=t.getTime();}attData[k].sub.auto=true;saveAtt();renderHomeStats();var subName=userData.subJob?.name||gps221JobName('sub');var el=document.getElementById('lastOut');if(el)el.textContent='GPS 💼 '+subName+' '+hm;if(typeof showGpsBanner==='function')showGpsBanner(gps221Tpl('autoOut',{time:hm}),'#7B5EA7');}return;} if(typeof oldGpsAutoOut==='function')oldGpsAutoOut();};
-  var guardedSubGpsAutoOut=window.gpsAutoCheckout;
-  window.gpsAutoCheckout=function(){ensureGpsV221(); if((_gpsData.activeJob||'main')==='sub'&&typeof _gpsCanAutoCheckoutNow==='function'&&!_gpsCanAutoCheckoutNow()){if(typeof _addGpsTrail==='function')_addGpsTrail({type:'AUTO_CHECKOUT_ABORTED',job:'sub',reason:'not_freshly_outside'});if(typeof showGpsBanner==='function')showGpsBanner(gps221Tpl('abort'),'#F5A623');return;} if(typeof guardedSubGpsAutoOut==='function')guardedSubGpsAutoOut();};
   var _exportFormat='csv'; window._exportFormat=_exportFormat;
   window.selExportFormat=function(fmt){_exportFormat=(fmt==='pdf')?'pdf':'csv';window._exportFormat=_exportFormat;['Csv','Pdf'].forEach(function(x){var b=document.getElementById('efmt'+x);if(!b)return;var on=(x.toLowerCase()===_exportFormat);b.style.background=on?'var(--ac)':'white';b.style.color=on?'white':'var(--text2)';b.style.borderColor=on?'var(--ac)':'var(--border)';});var ext=document.getElementById('excelFileExt');if(ext)ext.textContent=_exportFormat==='pdf'?'.html':'.csv';var btn=document.getElementById('excelExportBtn');if(btn)btn.textContent=_exportFormat==='pdf'?gps221Tpl('pdf'):gps221Tpl('csv');};
   function ensureExportFormatUi(){var nameBlock=document.getElementById('excelFilenameLbl');if(!nameBlock||document.getElementById('excelFormatRow'))return;var p=gps221Pack();var row=document.createElement('div');row.id='excelFormatRow';row.style.cssText='margin:12px 0';row.innerHTML='<div style="font-size:11px;font-weight:800;color:var(--text3);margin-bottom:8px">'+escHtml(p.fileFormat)+'</div><div style="display:flex;gap:6px"><button id="efmtCsv" onclick="selExportFormat(\'csv\')" style="flex:1;padding:8px;border-radius:8px;border:1.5px solid var(--ac);background:var(--ac);color:white;font-size:12px;font-weight:900;font-family:Nunito,sans-serif">'+escHtml(p.csv)+'</button><button id="efmtPdf" onclick="selExportFormat(\'pdf\')" style="flex:1;padding:8px;border-radius:8px;border:1.5px solid var(--border);background:white;color:var(--text2);font-size:12px;font-weight:900;font-family:Nunito,sans-serif">'+escHtml(p.pdf)+'</button></div>';var parent=nameBlock.parentElement;parent.parentElement.insertBefore(row,parent);var span=parent.querySelector('span');if(span)span.id='excelFileExt';}
@@ -4095,41 +4338,6 @@ function downloadPdf(){
   setTimeout(bootHardI18n, 0);
   setTimeout(syncStatic, 1200);
   window.syncAllHardTextI18n = syncStatic;
-})();
-
-;(function(){
-  if(window.__gpsCycleGuardInstalled) return;
-  window.__gpsCycleGuardInstalled = true;
-  var prevAutoIn = window.gpsAutoCheckin;
-  if(typeof prevAutoIn !== 'function') return;
-  window.gpsAutoCheckin = function(){
-    var job = ((_gpsData && _gpsData.activeJob) || 'main') === 'sub' ? 'sub' : 'main';
-    if(typeof gpsEnsureCycleForCheckin === 'function'){
-      var canConfirm = !(document && document.visibilityState === 'hidden');
-      var guard = gpsEnsureCycleForCheckin(job, {
-        source: 'auto_wrapper',
-        allowConfirm: canConfirm,
-        showBanner: true
-      });
-      if(!guard || !guard.allowed){
-        if(typeof _addGpsTrail === 'function'){
-          _addGpsTrail({
-            type: 'AUTO_CHECKIN_ABORTED',
-            job: job,
-            reason: guard && guard.reason ? guard.reason : 'cycle_blocked',
-            minutesLeft: guard && guard.minutesLeft ? guard.minutesLeft : 0
-          });
-        }
-        return;
-      }
-    } else if(typeof gpsCanStartNewAutoCycle === 'function' && !gpsCanStartNewAutoCycle(job)){
-      var left = (typeof gpsMinutesUntilNewCycle === 'function') ? gpsMinutesUntilNewCycle(job) : 0;
-      if(typeof _addGpsTrail === 'function') _addGpsTrail({type:'AUTO_CHECKIN_ABORTED', job:job, reason:'cycle_wait_8h', minutesLeft:left});
-      if(typeof showGpsBanner === 'function') showGpsBanner(u('gps.cycle_wait', {m:left}), '#F5A623');
-      return;
-    }
-    return prevAutoIn.apply(this, arguments);
-  };
 })();
 
   var oldDoExport=window.doExport; window.doExport=function(){if(_exportFormat==='pdf')return downloadPdf();if(typeof oldDoExport==='function')return oldDoExport();};

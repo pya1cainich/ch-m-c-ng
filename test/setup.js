@@ -57,6 +57,10 @@ function loadApp() {
   const checkinCode = fs.readFileSync(path.join(ROOT, 'checkin.js'), 'utf8');
   try { vm.runInContext(checkinCode, ctx); } catch (e) { /* bỏ qua lỗi DOM khi init */ }
 
+  // Load smart-attendance.js (chấm công tự động)
+  const saCode = fs.readFileSync(path.join(ROOT, 'smart-attendance.js'), 'utf8');
+  try { vm.runInContext(saCode, ctx); } catch (e) { /* bỏ qua lỗi DOM khi init */ }
+
   // const/let trong vm không tự gắn vào context object — phải copy thủ công
   vm.runInContext(`
     this.PAYROLL_RULES = typeof PAYROLL_RULES !== 'undefined' ? PAYROLL_RULES : undefined;
@@ -90,6 +94,12 @@ function loadApp() {
       if('positionHistory' in obj) _gpsPositionHistory = obj.positionHistory;
       if('batteryProfile' in obj) _gpsBatteryProfile = obj.batteryProfile;
     };
+
+    // Smart-attendance bridge: một số API được gắn trên window
+    this.ensureGpsAutoRunning = this.ensureGpsAutoRunning || (this.window && this.window.ensureGpsAutoRunning);
+    this.gpsSetSmartAutoAttendance = this.gpsSetSmartAutoAttendance || (this.window && this.window.gpsSetSmartAutoAttendance);
+    this.gpsAutoCheckin = this.gpsAutoCheckin || (this.window && this.window.gpsAutoCheckin);
+    this.gpsAutoCheckout = this.gpsAutoCheckout || (this.window && this.window.gpsAutoCheckout);
   `, ctx);
 
   // Dọn timer để tránh lỗi loadGpsData

@@ -836,18 +836,76 @@
     return fri;
   }
 
+  /* ══════════════════════════════════════════════════════════════════════
+     window.ccNative.brain — Wrapper cho AttendanceBrainPlugin (bộ não mới)
+     Xương cá: JS ↔ Native bridge duy nhất cho smart attendance
+     ══════════════════════════════════════════════════════════════════════ */
+  function initBrainWrapper() {
+    const BrainPlugin = (window.Capacitor && window.Capacitor.Plugins)
+      ? window.Capacitor.Plugins.AttendanceBrain
+      : null;
+
+    if (!BrainPlugin) {
+      console.warn('[cc-int] AttendanceBrain plugin không tìm thấy — brain wrapper disabled');
+      return;
+    }
+
+    window.ccNative = window.ccNative || {};
+    window.ccNative.brain = {
+      /** Đồng bộ config từ JS xuống native SharedPreferences */
+      syncConfig: (cfg) => BrainPlugin.syncConfig(cfg),
+
+      /** Bật bộ não nền (register motion, đặt alarm, evaluate lần đầu) */
+      start: () => BrainPlugin.start(),
+
+      /** Tắt bộ não nền */
+      stop: () => BrainPlugin.stop(),
+
+      /** Đọc state native hiện tại */
+      getState: () => BrainPlugin.getState(),
+
+      /** JS ghi đè state (dùng cho recovery JS-side) */
+      setState: (state, flags) => BrainPlugin.setState({ state, ...flags }),
+
+      /** Chạy recovery khi app mở lại / WebView visible */
+      runRecovery: () => BrainPlugin.runRecovery(),
+
+      /** Đọc và xoá pending event do native ghi (check-in/out bù) */
+      consumePendingEvent: () => BrainPlugin.consumePendingEvent(),
+
+      /** Yêu cầu GPS oneshot ngắn hạn */
+      requestOneShotGps: () => BrainPlugin.requestOneShotGps(),
+
+      /** JS cập nhật GPS result vào native (sau khi lấy GPS qua JS) */
+      updateGpsResult: (lat, lng, accuracy) =>
+        BrainPlugin.updateGpsResult({ lat, lng, accuracy }),
+
+      /** Đặt lại alarm cho hôm nay (sau khi đổi giờ ca) */
+      scheduleAlarms: () => BrainPlugin.scheduleAlarms(),
+    };
+
+    console.log('[cc-int] ccNative.brain ready');
+  }
+
   // ── Chờ Capacitor sẵn sàng rồi init ─────────────────────────────────
   if (window.Capacitor && window.Capacitor.Plugins) {
     // Capacitor đã sẵn sàng
     initCcNative();
+    initBrainWrapper();
   } else {
     // Chờ event deviceready (Capacitor 6)
-    document.addEventListener('deviceready', initCcNative, { once: true });
+    document.addEventListener('deviceready', () => {
+      initCcNative();
+      initBrainWrapper();
+    }, { once: true });
     // Fallback: thử lại sau 2 giây
     setTimeout(() => {
       if (!window.ccNative) {
         console.log('[cc-int] Fallback init...');
         initCcNative();
+      }
+      if (!window.ccNative || !window.ccNative.brain) {
+        initBrainWrapper();
       }
     }, 2000);
   }

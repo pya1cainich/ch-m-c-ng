@@ -23,7 +23,11 @@ public class NativeGpsBootReceiver extends BroadcastReceiver {
         boolean isBootOrUpdate = action.equals(Intent.ACTION_BOOT_COMPLETED)
             || action.equals("android.intent.action.LOCKED_BOOT_COMPLETED")
             || action.equals(Intent.ACTION_MY_PACKAGE_REPLACED)
-            || action.equals("android.intent.action.MY_PACKAGE_REPLACED");
+            || action.equals("android.intent.action.MY_PACKAGE_REPLACED")
+            // MIUI (Xiaomi/Redmi) fast boot
+            || action.equals("android.intent.action.QUICKBOOT_POWERON")
+            // HTC fast boot
+            || action.equals("com.htc.intent.action.QUICKBOOT_POWERON");
 
         if (!isBootOrUpdate) return;
 

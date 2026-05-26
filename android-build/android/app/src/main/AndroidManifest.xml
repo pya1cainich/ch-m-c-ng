@@ -56,7 +56,10 @@
     <!-- â”€â”€â”€â”€â”€â”€â”€â”€â”€ BATTERY OPTIMIZATION (cho phĂ©p user disable) â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- â”€â”€â”€â”€â”€â”€â”€â”€â”€ HARDWARE FEATURES â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+    <!-- ───────── ACTIVITY RECOGNITION (Motion Transition — bộ não mới) ───────── -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
+    <!--â”€â”€â”€â”€â”€â”€â”€â”€â”€ HARDWARE FEATURES â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
     <!-- required="true": báº¯t buá»™c cĂ³ location (máº¡ng hoáº·c GPS) -->
     <uses-feature android:name="android.hardware.location" android:required="true" />
     <!-- âœ… Sá»¬A: khĂ´ng báº¯t buá»™c GPS cá»©ng, giĂºp tablet khĂ´ng GPS váº«n cĂ i Ä‘Æ°á»£c (dĂ¹ng network location) -->
@@ -103,6 +106,10 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <!-- MIUI (Xiaomi/Redmi) dùng intent riêng cho fast boot -->
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <!-- HTC fast boot -->
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
 
@@ -111,6 +118,42 @@
             android:name=".NotificationReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <!-- GpsWatchdogReceiver: lớp bảo vệ thứ 4 — restart service nếu OEM kill -->
+        <!-- Dùng system broadcasts thường xuyên để phát hiện service chết -->
+        <receiver
+            android:name=".GpsWatchdogReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <!-- Người dùng bật/tắt màn hình — vài lần/ngày, đủ để phát hiện service chết -->
+                <action android:name="android.intent.action.SCREEN_ON" />
+                <action android:name="android.intent.action.SCREEN_OFF" />
+                <!-- Người dùng mở khoá màn hình -->
+                <action android:name="android.intent.action.USER_PRESENT" />
+                <!-- Kết nối mạng thay đổi (Wi-Fi bật/tắt) -->
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ===== BỘ NÃO CHẤM CÔNG MỚI — Alarm + Motion Receivers ===== -->
+        <receiver
+            android:name=".AttendanceAlarmReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.chamcongpro.ATTENDANCE_ALARM" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".MotionTransitionReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.chamcongpro.MOTION_TRANSITION" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name="io.capawesome.capacitorjs.plugins.foregroundservice.NotificationActionBroadcastReceiver"
