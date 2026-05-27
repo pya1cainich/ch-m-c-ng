@@ -8,10 +8,26 @@
 (function(){
 'use strict';
 
-var MAX_ENTRIES = 2000;
+var MAX_ENTRIES = 10000;
 var AUTO_SCROLL = true;
 var STORAGE_KEY = 'chamcongpro.debug.audit.v2';
-var INPUT_AUDIT_THROTTLE_MS = 650;
+var INPUT_AUDIT_THROTTLE_MS = 200;
+var FULL_TRACE_KEY = 'cp22_debug_full_trace';
+var FULL_TRACE_DEFAULT = true;
+
+function _readFullTracePref(){
+  try{
+    var store = window.localStorage;
+    if(!store) return FULL_TRACE_DEFAULT;
+    var raw = store.getItem(FULL_TRACE_KEY);
+    if(raw == null || raw === '') return FULL_TRACE_DEFAULT;
+    return raw === '1' || raw === 'true';
+  }catch(e){
+    return FULL_TRACE_DEFAULT;
+  }
+}
+
+var FULL_TRACE = _readFullTracePref();
 
 var _logs = [];
 var _filter = 'ALL';
@@ -25,6 +41,7 @@ var _nextSeq = 0;
 var _lastInputAudit = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
 var _lastUiStateKey = '';
 var _uiScanTimer = null;
+var _fullTraceInitDone = false;
 
 var _storageProto = window.Storage && window.Storage.prototype;
 var _rawStorage = {
@@ -377,10 +394,38 @@ function _installActivityAudit(){
   document.addEventListener('input', _onInput, true);
   document.addEventListener('keydown', _onKeydown, true);
   document.addEventListener('submit', _onSubmit, true);
+  document.addEventListener('touchstart', function(e){
+    if(!FULL_TRACE) return;
+    if(_isInsideDebug(e.target)) return;
+    var t = e.touches && e.touches[0];
+    var detail = t ? ('xy=' + Math.round(t.clientX) + ',' + Math.round(t.clientY)) : '';
+    _add('ACT', 'TOUCH', _describeElement(_targetElement(e.target)), detail);
+  }, true);
+  document.addEventListener('touchend', function(e){
+    if(!FULL_TRACE) return;
+    if(_isInsideDebug(e.target)) return;
+    _add('ACT', 'TOUCH', 'touchend ' + _describeElement(_targetElement(e.target)));
+  }, true);
+  document.addEventListener('pointerdown', function(e){
+    if(!FULL_TRACE) return;
+    if(_isInsideDebug(e.target)) return;
+    var ptype = e.pointerType || 'pointer';
+    _add('ACT', 'PTR', ptype + ' down ' + _describeElement(_targetElement(e.target)), 'xy=' + Math.round(e.clientX||0) + ',' + Math.round(e.clientY||0));
+  }, true);
+  document.addEventListener('pointerup', function(e){
+    if(!FULL_TRACE) return;
+    if(_isInsideDebug(e.target)) return;
+    var ptype = e.pointerType || 'pointer';
+    _add('ACT', 'PTR', ptype + ' up ' + _describeElement(_targetElement(e.target)));
+  }, true);
 
   document.addEventListener('visibilitychange', function(){
     _add('NAV', 'VIS', 'document.visibilityState => ' + document.visibilityState);
   });
+  window.addEventListener('focus', function(){ _add('NAV', 'FOCUS', 'window focus'); });
+  window.addEventListener('blur', function(){ _add('NAV', 'FOCUS', 'window blur'); });
+  window.addEventListener('resize', function(){ if(FULL_TRACE) _add('NAV', 'RESIZE', window.innerWidth + 'x' + window.innerHeight); });
+  window.addEventListener('orientationchange', function(){ if(FULL_TRACE) _add('NAV', 'ORIENT', String(window.orientation || 0)); });
   window.addEventListener('online', function(){ _add('NAV', 'NET', 'online'); });
   window.addEventListener('offline', function(){ _add('NAV', 'NET', 'offline'); });
   window.addEventListener('hashchange', function(){
@@ -389,6 +434,27 @@ function _installActivityAudit(){
   window.addEventListener('popstate', function(){
     _add('NAV', 'POP', location.href);
   });
+}
+
+function _installHistoryAudit(){
+  if(!window.history || window.history.__dbgAuditWrapped) return;
+  var rawPush = history.pushState;
+  var rawReplace = history.replaceState;
+  if(typeof rawPush === 'function'){
+    history.pushState = function(state, title, url){
+      var r = rawPush.apply(this, arguments);
+      _add('NAV', 'PUSH', String(url || location.href));
+      return r;
+    };
+  }
+  if(typeof rawReplace === 'function'){
+    history.replaceState = function(state, title, url){
+      var r = rawReplace.apply(this, arguments);
+      if(FULL_TRACE) _add('NAV', 'REPLACE', String(url || location.href));
+      return r;
+    };
+  }
+  window.history.__dbgAuditWrapped = true;
 }
 
 function _storageName(store){
@@ -472,6 +538,78 @@ function _installStorageAudit(){
     return result;
   };
   _storageProto.__dbgAuditWrapped = true;
+}
+
+function _installNetworkAudit(){
+  // fetch
+  if(window.fetch && !window.fetch.__dbgAuditWrapped){
+    var rawFetch = window.fetch;
+    window.fetch = function(input, init){
+      var method = (init && init.method) ? String(init.method).toUpperCase() : 'GET';
+      var url = (typeof input === 'string') ? input : (input && input.url) || '';
+      var started = Date.now();
+      if(FULL_TRACE) _add('NATIVE', 'FETCH', method + ' ' + _compact(url, 140));
+      return rawFetch.apply(this, arguments).then(function(res){
+        _add('NATIVE', 'FETCH', method + ' ' + _compact(url, 120) + ' => ' + res.status, 'time=' + (Date.now() - started) + 'ms');
+        return res;
+      }).catch(function(err){
+        _add('ERROR', 'FETCH', method + ' ' + _compact(url, 120) + ' FAILED', String(err && err.message || err));
+        throw err;
+      });
+    };
+    window.fetch.__dbgAuditWrapped = true;
+  }
+
+  // XHR
+  if(window.XMLHttpRequest && !window.XMLHttpRequest.__dbgAuditWrapped){
+    var XHR = window.XMLHttpRequest;
+    var rawOpen = XHR.prototype.open;
+    var rawSend = XHR.prototype.send;
+    XHR.prototype.open = function(method, url){
+      this.__dbgMethod = String(method || 'GET').toUpperCase();
+      this.__dbgUrl = String(url || '');
+      this.__dbgStartedAt = 0;
+      return rawOpen.apply(this, arguments);
+    };
+    XHR.prototype.send = function(){
+      var self = this;
+      self.__dbgStartedAt = Date.now();
+      if(FULL_TRACE) _add('NATIVE', 'XHR', (self.__dbgMethod || 'GET') + ' ' + _compact(self.__dbgUrl || '', 140));
+      self.addEventListener('loadend', function(){
+        var dt = self.__dbgStartedAt ? (Date.now() - self.__dbgStartedAt) : 0;
+        _add('NATIVE', 'XHR', (self.__dbgMethod || 'GET') + ' ' + _compact(self.__dbgUrl || '', 120) + ' => ' + self.status, 'time=' + dt + 'ms');
+      }, { once:true });
+      return rawSend.apply(this, arguments);
+    };
+    window.XMLHttpRequest.__dbgAuditWrapped = true;
+  }
+}
+
+function _installTimerAudit(){
+  if(window.__dbgTimerAuditInstalled) return;
+  var rawTimeout = window.setTimeout;
+  var rawInterval = window.setInterval;
+  if(typeof rawTimeout === 'function'){
+    window.setTimeout = function(fn, delay){
+      var ms = Number(delay) || 0;
+      if(FULL_TRACE && ms >= 1000){
+        var name = (typeof fn === 'function' && fn.name) ? fn.name : 'anonymous';
+        _add('INFO', 'TIMER', 'setTimeout ' + name + ' +' + ms + 'ms');
+      }
+      return rawTimeout.apply(this, arguments);
+    };
+  }
+  if(typeof rawInterval === 'function'){
+    window.setInterval = function(fn, delay){
+      var ms = Number(delay) || 0;
+      if(FULL_TRACE && ms >= 1000){
+        var name = (typeof fn === 'function' && fn.name) ? fn.name : 'anonymous';
+        _add('INFO', 'TIMER', 'setInterval ' + name + ' @' + ms + 'ms');
+      }
+      return rawInterval.apply(this, arguments);
+    };
+  }
+  window.__dbgTimerAuditInstalled = true;
 }
 
 function _readUiState(){
@@ -691,6 +829,15 @@ window.dbgToggleScroll = function(){
   if(btn) btn.textContent = AUTO_SCROLL ? 'Auto' : 'Pause';
 };
 
+window.dbgSetFullTrace = function(on){
+  FULL_TRACE = !!on;
+  try{
+    var store = window.localStorage;
+    if(store) store.setItem(FULL_TRACE_KEY, FULL_TRACE ? '1' : '0');
+  }catch(e){}
+  _add('INFO', 'TRACE', 'Full trace ' + (FULL_TRACE ? 'ON' : 'OFF'));
+};
+
 window.dbgAudit = function(tag, msg, detail){
   _add('ACT', tag || 'APP', msg || '', detail || '');
 };
@@ -702,8 +849,22 @@ window.dbgGetLogs = function(){
 _loadStoredLogs();
 _installActivityAudit();
 _installStorageAudit();
+_installHistoryAudit();
+_installNetworkAudit();
+_installTimerAudit();
 _installUiAudit();
 _tryHooks();
-_add('INFO', 'SYS', 'Debug Monitor ready - app-wide audit enabled');
+_add('INFO', 'SYS', 'Debug Monitor ready - app-wide audit enabled' + (FULL_TRACE ? ' (FULL)' : ''));
+
+if(FULL_TRACE && !_fullTraceInitDone){
+  _fullTraceInitDone = true;
+  setTimeout(function(){
+    try{
+      window.dbgSetFilter('ALL');
+      window.dbgOpen();
+      _add('INFO', 'TRACE', 'FULL TRACE MODE ACTIVE');
+    }catch(e){}
+  }, 800);
+}
 
 })();

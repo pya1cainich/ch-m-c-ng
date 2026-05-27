@@ -73,9 +73,7 @@ public class AttendanceBrainPlugin extends Plugin {
                 ed.putInt(AttendanceState.KEY_SHIFT_END_MIN,  shiftOut.getInteger("min", 0));
             }
 
-            // WiFi công ty
-            JSObject workWifi = call.getArray("workWifi") != null
-                ? null : call.getObject("workWifi");
+            // WiFi công ty (JSON string từ JS)
             String workWifiJson = call.getString("workWifiJson", "[]");
             ed.putString(AttendanceState.KEY_WORK_WIFI_LIST, workWifiJson);
 
@@ -87,22 +85,22 @@ public class AttendanceBrainPlugin extends Plugin {
             JSObject workGps = call.getObject("workGps");
             if (workGps != null) {
                 ed.putFloat(AttendanceState.KEY_WORK_GPS_LAT,
-                    (float) workGps.getDouble("lat", 0));
+                    (float) workGps.optDouble("lat", 0d));
                 ed.putFloat(AttendanceState.KEY_WORK_GPS_LNG,
-                    (float) workGps.getDouble("lng", 0));
+                    (float) workGps.optDouble("lng", 0d));
                 ed.putFloat(AttendanceState.KEY_WORK_GPS_RADIUS,
-                    (float) workGps.getDouble("radius", 100));
+                    (float) workGps.optDouble("radius", 100d));
             }
 
             // GPS nhà
             JSObject homeGps = call.getObject("homeGps");
             if (homeGps != null) {
                 ed.putFloat(AttendanceState.KEY_HOME_GPS_LAT,
-                    (float) homeGps.getDouble("lat", 0));
+                    (float) homeGps.optDouble("lat", 0d));
                 ed.putFloat(AttendanceState.KEY_HOME_GPS_LNG,
-                    (float) homeGps.getDouble("lng", 0));
+                    (float) homeGps.optDouble("lng", 0d));
                 ed.putFloat(AttendanceState.KEY_HOME_GPS_RADIUS,
-                    (float) homeGps.getDouble("radius", 120));
+                    (float) homeGps.optDouble("radius", 120d));
             }
 
             ed.apply();
@@ -285,8 +283,8 @@ public class AttendanceBrainPlugin extends Plugin {
 
     @PluginMethod
     public void updateGpsResult(PluginCall call) {
-        double lat = call.getDouble("lat", 0);
-        double lng = call.getDouble("lng", 0);
+        double lat = call.getDouble("lat", 0d);
+        double lng = call.getDouble("lng", 0d);
         long   ts  = System.currentTimeMillis();
 
         AttendanceState.prefs(getContext()).edit()

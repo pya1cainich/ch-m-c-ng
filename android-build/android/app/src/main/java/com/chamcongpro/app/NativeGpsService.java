@@ -472,16 +472,19 @@ public class NativeGpsService extends Service {
         };
 
         try {
+            // ── FIX WARNING: đọc brain_interval_ms nếu Brain v2 đang dùng ─────
+            long locationIntervalMs = getSharedPreferences(GPS_PREFS, MODE_PRIVATE)
+                .getLong("brain_interval_ms", 30_000L);
             boolean requestedAnyProvider = false;
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, 30_000L, 5f, locationListener
+                    LocationManager.GPS_PROVIDER, locationIntervalMs, 5f, locationListener
                 );
                 requestedAnyProvider = true;
             }
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
                 locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER, 30_000L, 5f, locationListener
+                    LocationManager.NETWORK_PROVIDER, locationIntervalMs, 5f, locationListener
                 );
                 requestedAnyProvider = true;
             }
@@ -821,11 +824,29 @@ public class NativeGpsService extends Service {
                 } catch (Exception e) {
                     android.util.Log.w("NativeGps", "signal change handler error: " + e.getMessage());
                 }
+
+                // ── FIX WARNING: Brain v2 WiFi change trigger ─────────────────
+                // CONNECTIVITY_CHANGE không được nhận trong manifest trên API 24+,
+                // nhưng đăng ký động trong foreground service thì vẫn hoạt động.
+                if (isBrainV2Enabled(NativeGpsService.this)) {
+                    final Context appCtx = getApplicationContext();
+                    new Thread(() -> {
+                        try {
+                            android.util.Log.d("NativeGps",
+                                "[Brain] WiFi/network changed (dynamic) → evaluate()");
+                            AttendanceBrain.get().evaluate(appCtx, "wifi_change");
+                        } catch (Exception ex) {
+                            android.util.Log.w("NativeGps",
+                                "Brain wifi_change eval error: " + ex.getMessage());
+                        }
+                    }, "Brain-wifi-dyn").start();
+                }
             }
         };
         IntentFilter filter = new IntentFilter();
         filter.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION);     // Wi-Fi radio bật/tắt
         filter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);  // Kết nối/ngắt Wi-Fi
+        filter.addAction("android.net.conn.CONNECTIVITY_CHANGE");    // FIX: đăng ký động (API 24+ ok)
         filter.addAction(LocationManager.PROVIDERS_CHANGED_ACTION);  // GPS hệ thống bật/tắt
         try {
             registerReceiver(signalChangeReceiver, filter);
@@ -1328,6 +1349,29 @@ public class NativeGpsService extends Service {
     private void checkGeofence(Location location) {
         // Đọc và lưu Wi-Fi + BTS cho smart-attendance.js
         readAndStoreSmartSignals();
+
+        // ── FIX WARNING: GPS → Brain v2 feedback ─────────────────────────────
+        // Ghi GPS fix vào cc_brain_state để AttendanceBrain.checkWorkSignal() đọc
+        // khi app bị kill và JS không thể gọi updateGpsResult().
+        if (isBrainV2Enabled(this)) {
+            double lat = location.getLatitude();
+            double lng = location.getLongitude();
+            getSharedPreferences(AttendanceState.PREFS_NAME, MODE_PRIVATE).edit()
+                .putLong(AttendanceState.KEY_LAST_GPS_LAT, Double.doubleToLongBits(lat))
+                .putLong(AttendanceState.KEY_LAST_GPS_LNG, Double.doubleToLongBits(lng))
+                .putLong(AttendanceState.KEY_LAST_GPS_AT, System.currentTimeMillis())
+                .apply();
+            // Trigger Brain evaluate với GPS mới (chạy thread riêng tránh block callback)
+            final Context appCtx = getApplicationContext();
+            new Thread(() -> {
+                try {
+                    AttendanceBrain.get().evaluate(appCtx, "gps_service_fix");
+                } catch (Exception e) {
+                    android.util.Log.w("NativeGps",
+                        "Brain gps_service_fix eval error: " + e.getMessage());
+                }
+            }, "Brain-gps-fix").start();
+        }
 
         GeofenceDecision decision = buildGeofenceDecision(location);
         if (!decision.hasTarget) return;

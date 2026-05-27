@@ -2529,6 +2529,9 @@ function gpsOnCheckinSaved(payload){
       gpsScheduleOpenShiftReminders({ job: 'sub', open: openSub }, now);
     }
   }
+  if(typeof window.saBrainSyncFromManualAttendance === 'function'){
+    try{ window.saBrainSyncFromManualAttendance(p); }catch(e){}
+  }
 }
 
 function gpsOnManualCheckoutSaved(payload){
@@ -2549,6 +2552,9 @@ function gpsOnManualCheckoutSaved(payload){
   }
   gpsSaveOpenShiftNoticeState();
   gpsHideOpenShiftBannerNow();
+  if(typeof window.saBrainSyncFromManualAttendance === 'function'){
+    try{ window.saBrainSyncFromManualAttendance(p); }catch(e){}
+  }
 }
 
 function gpsCloseOpenShift(openInfo, closeMs){
@@ -2772,30 +2778,6 @@ window.showGpsBanner = showGpsBanner;
 // The values stay in sync because top-level vars in classic script ARE properties of window.
 
 
-/** Đọc cài đặt GPS từ localStorage */
-function loadGpsData(){
-  const g = lsGet('cp22_gps');
-  if(g) _gpsData = Object.assign(_gpsData, g);
-  _gpsData.tightCompanyGps = !!_gpsData.tightCompanyGps;
-  _gpsData.smartAttendanceMode = _gpsData.enabled ? true : !!_gpsData.smartAttendanceMode;
-  _gpsData.insideScheduleOut = false;
-  if(typeof gpsApplyDefaultRadiusMigration === 'function') gpsApplyDefaultRadiusMigration();
-  if(typeof gpsRepairLocationPersistence === 'function'){
-    gpsRepairLocationPersistence();
-    lsSet('cp22_gps', _gpsData);
-  }
-}
-
-/** Lưu cài đặt GPS vào localStorage */
-function saveGpsData(){
-  if(typeof gpsRepairLocationPersistence === 'function') gpsRepairLocationPersistence();
-  _gpsData.tightCompanyGps = !!_gpsData.tightCompanyGps;
-  _gpsData.smartAttendanceMode = _gpsData.enabled ? true : !!_gpsData.smartAttendanceMode;
-  _gpsData.insideScheduleOut = false;
-  lsSet('cp22_gps', _gpsData);
-  try{ gpsSyncNativeNow(); }catch(e){}
-}
-
 // FIX P3 #7: debounce 300ms khi user kéo slider GPS (gpsRadius/gpsCheckinDelay/gpsCheckoutDelay).
 // Trước đây mỗi event input ghi cp22_gps + sync native ngay → log thấy 5-10 lần ghi cho 1 lần kéo.
 // _gpsData vẫn được update vào RAM ngay (giữ UI responsive), chỉ phần persist + sync native là debounce.
@@ -2808,181 +2790,6 @@ function gpsSliderSaveDebounced(){
   }, 300);
 }
 window.gpsSliderSaveDebounced = gpsSliderSaveDebounced;
-
-/** Bật/tắt GPS auto check-in: hiện/ẩn panel cấu hình */
-function togGPS(btn){
-  const willEnable = !(btn && btn.classList && btn.classList.contains('on'));
-  return gpsSetSmartAutoAttendance(willEnable, 'togGPS');
-}
-
-/** Yêu cầu quyền GPS — hiển thị hướng dẫn + form nhập thủ công */
-function gpsRequestPermission(){
-  const permGuide = document.getElementById('gpsPermGuide');
-  const manualBox = document.getElementById('gpsManualBox');
-  // Kiểm tra xem trình duyệt có hỗ trợ GPS không
-  if(!navigator.geolocation){
-    if(permGuide) permGuide.style.display = 'block';
-    if(manualBox) manualBox.style.display = 'block';
-    return;
-  }
-  // Thử kiểm tra quyền trước (API mới hơn)
-  if(navigator.permissions){
-    navigator.permissions.query({name:'geolocation'})
-      .then(result => {
-        if(result.state === 'denied'){
-          // Bị từ chối → hiện hướng dẫn + form nhập tay
-          if(permGuide) permGuide.style.display = 'block';
-          if(manualBox) manualBox.style.display = 'block';
-        } else {
-          gpsGetCurrentPos();
-        }
-      })
-      .catch(() => gpsGetCurrentPos()); // fallback nếu API permission không hỗ trợ
-  } else {
-    gpsGetCurrentPos(); // Trực tiếp lấy vị trí
-  }
-}
-
-/** Toggle hướng dẫn mở server cục bộ */
-function gpsShowHostGuide(){
-  const g = document.getElementById('gpsHostGuide');
-  if(g) g.style.display = g.style.display === 'none' ? 'block' : 'none';
-  return false;
-}
-
-/** Lưu tọa độ nhập thủ công từ Google Maps */
-function gpsSaveManual(){
-  const lat = parseFloat(document.getElementById('gpsManualLat')?.value);
-  const lng = parseFloat(document.getElementById('gpsManualLng')?.value);
-  // Kiểm tra tọa độ hợp lệ
-  if(isNaN(lat)||isNaN(lng)||lat<-90||lat>90||lng<-180||lng>180){
-    showGpsBanner('Tọa độ không hợp lệ. Kiểm tra lại.','#E8433A');
-    return;
-  }
-  gpsPersistCompanyLocation(lat, lng, parseInt(document.getElementById('gpsRadius')?.value) || 15);
-  saveGpsData();
-  updateGpsStatus();
-  startGeofencing(); // Bắt đầu theo dõi ngay sau khi lưu
-  showGpsBanner(u('gps.saved'),'#0D9E75');
-  const pg = document.getElementById('gpsPermGuide');
-  if(pg) pg.style.display = 'none';
-}
-
-/** Lấy vị trí GPS hiện tại 1 lần để lưu làm vị trí công ty */
-function gpsGetCurrentPos(){
-  const statusTxt = document.getElementById('gpsStatusTxt');
-  const statusDot = document.getElementById('gpsStatusDot');
-  const permGuide = document.getElementById('gpsPermGuide');
-  if(!navigator.geolocation){
-    if(statusTxt) statusTxt.textContent = u('gps.no_device');
-    if(statusDot) statusDot.style.background = '#E8433A';
-    return;
-  }
-  if(statusTxt) statusTxt.textContent = u('gps.loading');
-  if(statusDot) statusDot.style.background = '#F5A623';
-  navigator.geolocation.getCurrentPosition(
-    pos => {
-      // Thành công → lưu vị trí công ty
-      gpsPersistCompanyLocation(
-        pos.coords.latitude,
-        pos.coords.longitude,
-        parseInt(document.getElementById('gpsRadius')?.value) || 15
-      );
-      saveGpsData();
-      updateGpsStatus();
-      startGeofencing();
-      if(permGuide) permGuide.style.display = 'none';
-    },
-    err => {
-      // Thất bại → hiện thông báo lỗi và hướng dẫn
-      const msgs = {
-        1: u('gps.err_denied'),
-        2: u('gps.err_position'),
-        3: u('gps.err_timeout')
-      };
-      if(statusTxt) statusTxt.textContent = msgs[err.code] || u('gps.err_label');
-      if(statusDot) statusDot.style.background = '#E8433A';
-      if(err.code === 1 && permGuide){
-        permGuide.style.display = 'block';
-        const mb = document.getElementById('gpsManualBox');
-        if(mb) mb.style.display = 'block';
-      }
-    },
-    {enableHighAccuracy: true, timeout: 15000, maximumAge: 0}
-  );
-}
-
-/** Xóa cài đặt GPS và dừng theo dõi */
-function gpsClear(){
-  window.__gpsManualOffThisSession = true;
-  stopGeofencing();
-  _gpsData.lat = null;
-  _gpsData.lng = null;
-  _gpsData.enabled = false;
-  saveGpsData();
-  const btn = document.getElementById('togN3');
-  if(btn) btn.classList.remove('on');
-  notifCfg.n3 = false; saveNotif();
-  const card = document.getElementById('gpsSetupCard');
-  if(card) card.style.display = 'none';
-  updateGpsStatus();
-}
-
-/** Cập nhật UI trạng thái GPS (đang trong/ngoài khu vực, tọa độ) */
-function updateGpsStatus(){
-  const statusTxt = document.getElementById('gpsStatusTxt');
-  const statusDot = document.getElementById('gpsStatusDot');
-  const coordsBox = document.getElementById('gpsCoordsBox');
-  const coordsTxt = document.getElementById('gpsCoordsText');
-  if(!statusTxt) return;
-  if(_gpsData.lat && _gpsData.lng){
-    const inside = _gpsWasInside;
-    statusTxt.textContent = inside === true  ? u('gps.in_zone')
-                          : inside === false ? u('gps.out_zone')
-                          : u('gps.saved');
-    statusDot.style.background = inside === true ? '#0D9E75' : inside === false ? '#E8433A' : '#F5A623';
-    if(coordsBox) coordsBox.style.display = 'block';
-    if(coordsTxt) coordsTxt.innerHTML =
-      `Lat: ${_gpsData.lat.toFixed(6)} | Lng: ${_gpsData.lng.toFixed(6)} | R: ${_gpsData.radius}m<br>` +
-      u('gps.coords_line', {r:_gpsData.radius, p:_gpsPollMs/1000});
-  } else {
-    statusTxt.textContent = u('gps.no_setup');
-    statusDot.style.background = '#ccc';
-    if(coordsBox) coordsBox.style.display = 'none';
-  }
-}
-
-/** Tính khoảng cách (mét) giữa 2 điểm GPS theo công thức Haversine */
-function gpsDistance(lat1, lng1, lat2, lng2){
-  const R = 6371000; // Bán kính Trái Đất (mét)
-  const toRad = d => d * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat/2)**2 +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
-
-/* showGpsBanner and helpers below */
-function showGpsBanner(msg, color){
-  let banner = document.getElementById('gpsBanner');
-  if(!banner){
-    banner = document.createElement('div');
-    banner.id = 'gpsBanner';
-    banner.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);'
-      + 'z-index:9999;padding:12px 20px;border-radius:12px;font-size:13px;font-weight:700;'
-      + 'font-family:Nunito,sans-serif;color:white;box-shadow:0 4px 20px rgba(0,0,0,.25);'
-      + 'transition:opacity .4s;max-width:320px;text-align:center;pointer-events:none';
-    document.body.appendChild(banner);
-  }
-  banner.textContent = msg;
-  banner.style.background = color || '#0D9E75';
-  banner.style.opacity = '1';
-  clearTimeout(banner._timer);
-  banner._timer = setTimeout(() => { banner.style.opacity = '0'; }, 4000);
-}
-
-
 /** Render nội dung panel Hướng dẫn theo ngôn ngữ hiện tại */
 /* ═══════════════════════════════════════════════════════════════════════
    SUB JOB — JOB PHỤ (thêm mới, backward compatible)
