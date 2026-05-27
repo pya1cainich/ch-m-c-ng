@@ -2142,6 +2142,7 @@ function openPanel(id){
     calcSalary();
     if(typeof renderSubJobSalary==='function') renderSubJobSalary();
   }
+  if(id==='panelNotif'){renderNotifHistory();}
   if(id==='panelExcel'){renderExcelPreview();if(typeof updateExcelPanel==='function')updateExcelPanel();}
   if(id==='panelLang'){
     renderLangGrid('settingsLangGrid',userData.lang,selLangSetting);
@@ -5276,5 +5277,80 @@ if(document.readyState === 'loading'){
 
   document.addEventListener('DOMContentLoaded', function(){
     setTimeout(function(){ requestSetupNotificationReschedule('boot'); }, 2200);
+    _updateNotifDot();
   });
 })();
+
+// ══════════════════════════════════════════════════════
+//  NOTIFICATION HISTORY — lịch sử thông báo (max 100)
+// ══════════════════════════════════════════════════════
+
+function _nhEsc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function _nhTimeAgo(ms) {
+  if (ms < 60000)    return Math.floor(ms / 1000) + 'g trước';
+  if (ms < 3600000)  return Math.floor(ms / 60000) + 'p trước';
+  if (ms < 86400000) return Math.floor(ms / 3600000) + 'h trước';
+  return Math.floor(ms / 86400000) + 'ng trước';
+}
+
+function _updateNotifDot() {
+  try {
+    var dot = document.getElementById('notifDot');
+    if (!dot) return;
+    var arr = JSON.parse(localStorage.getItem('cp22_notif_history') || '[]');
+    var lastSeen = parseInt(localStorage.getItem('cp22_notif_last_seen') || '0', 10);
+    var unread = arr.filter(function(n){ return n.at > lastSeen; }).length;
+    dot.style.display = unread > 0 ? 'block' : 'none';
+  } catch(e) {}
+}
+
+function renderNotifHistory() {
+  var list = document.getElementById('notifHistoryList');
+  var countEl = document.getElementById('notifHistoryCount');
+  if (!list) return;
+  // Đánh dấu đã đọc
+  localStorage.setItem('cp22_notif_last_seen', String(Date.now()));
+  var dot = document.getElementById('notifDot');
+  if (dot) dot.style.display = 'none';
+  try {
+    var arr = JSON.parse(localStorage.getItem('cp22_notif_history') || '[]');
+    if (countEl) countEl.textContent = arr.length + ' thông báo';
+    if (arr.length === 0) {
+      list.innerHTML = '<div style="text-align:center;padding:48px 20px;color:var(--text3)">'
+        + '<div style="font-size:48px;margin-bottom:12px">🔕</div>'
+        + '<div style="font-size:14px;font-weight:800;color:var(--text2)">Chưa có thông báo nào</div>'
+        + '<div style="font-size:12px;margin-top:6px">Thông báo từ app sẽ hiển thị ở đây</div>'
+        + '</div>';
+      return;
+    }
+    var now = Date.now();
+    var html = arr.map(function(n) {
+      var icon = n.type === 'scheduled' ? '🕐' : '🔔';
+      var ago  = _nhTimeAgo(now - n.at);
+      var schedLine = (n.type === 'scheduled' && n.scheduledFor)
+        ? '<div style="font-size:10px;color:#cc8800;margin-top:3px">⏰ ' + new Date(n.scheduledFor).toLocaleString() + '</div>'
+        : '';
+      return '<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start">'
+        + '<div style="font-size:22px;flex-shrink:0;line-height:1">' + icon + '</div>'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:3px">' + _nhEsc(n.title) + '</div>'
+        + '<div style="font-size:12px;color:var(--text2);line-height:1.4">' + _nhEsc(n.body) + '</div>'
+        + schedLine
+        + '</div>'
+        + '<div style="font-size:10px;color:var(--text3);white-space:nowrap;padding-top:2px">' + ago + '</div>'
+        + '</div>';
+    }).join('');
+    list.innerHTML = html;
+  } catch(e) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3)">Lỗi tải lịch sử</div>';
+  }
+}
+
+function clearNotifHistory() {
+  localStorage.removeItem('cp22_notif_history');
+  localStorage.removeItem('cp22_notif_last_seen');
+  renderNotifHistory();
+}

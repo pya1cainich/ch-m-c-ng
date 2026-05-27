@@ -244,7 +244,7 @@ div[style*="font-family:Quicksand"],.rgb-text { font-family:'Cinzel',serif!impor
       <div class="app-title-wrap">
         <div class="app-title rgb-text" id="homeAppTitle">Chấm Công Pro</div>
         <div class="notif-btn" onclick="openPanel('panelNotif')">
-          🔔<div class="notif-dot" id="notifDot"></div>
+          🔔<div class="notif-dot" id="notifDot" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -450,6 +450,24 @@ div[style*="font-family:Quicksand"],.rgb-text { font-family:'Cinzel',serif!impor
     </div>
   </div>
   <div class="settings-list" style="padding-top:16px">
+    <!-- Quyền hệ thống -->
+    <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;padding:0 16px 6px">Quyền hệ thống</div>
+    <div class="settings-item" onclick="openNativePermissionSetting('notification')" id="btnOpenNotifPerm">
+      <div class="si-icon" style="background:#EEF4FF">🔔</div>
+      <div class="si-body"><div class="si-name">Quyền thông báo</div><div class="si-sub">Cho phép hiện thông báo</div></div>
+      <div class="si-arrow">›</div>
+    </div>
+    <div class="settings-item" onclick="openNativePermissionSetting('location')" id="btnOpenLocationPerm">
+      <div class="si-icon" style="background:#E0F5EE">📍</div>
+      <div class="si-body"><div class="si-name">Quyền vị trí</div><div class="si-sub">GPS chấm công tự động</div></div>
+      <div class="si-arrow">›</div>
+    </div>
+    <div class="settings-item" onclick="openNativePermissionSetting('battery')" id="btnOpenBatteryPerm">
+      <div class="si-icon" style="background:#FFF8E8">🔋</div>
+      <div class="si-body"><div class="si-name">Cài đặt pin</div><div class="si-sub">Không giới hạn nền</div></div>
+      <div class="si-arrow">›</div>
+    </div>
+    <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;padding:10px 16px 6px">Chung</div>
     <div class="settings-item" onclick="openPanel('panelLang')">
       <div class="si-icon" style="background:#EEF4FF">🌐</div>
       <div class="si-body"><div class="si-name">Ngôn ngữ</div><div class="si-sub" id="siLangSub">Tiếng Việt</div></div>
@@ -580,20 +598,20 @@ div[style*="font-family:Quicksand"],.rgb-text { font-family:'Cinzel',serif!impor
   </div>
 </div>
 
-<!-- Notification Panel -->
+<!-- Notification Panel — lịch sử thông báo -->
 <div class="panel-overlay" id="panelNotif">
-  <div class="panel-sheet panel-sheet-notif">
+  <div class="panel-sheet panel-sheet-notif" style="max-height:88vh;display:flex;flex-direction:column">
     <div class="panel-handle"></div>
-    <div class="panel-head">
-      <div class="panel-title" id="notifPanelTitle">🔔 Cài đặt thông báo</div>
+    <div class="panel-head" style="flex-shrink:0">
+      <div class="panel-title" id="notifPanelTitle">🔔 Lịch sử thông báo</div>
       <button class="panel-close" onclick="closePanel('panelNotif')">✕</button>
     </div>
-    <div class="panel-body">
-      <div style="display:grid;grid-template-columns:1fr;gap:8px">
-        <button onclick="openNativePermissionSetting('notification')" style="width:100%;background:#2D7DD2;border:0;border-radius:10px;color:white;font-size:13px;font-weight:800;padding:12px;cursor:pointer" id="btnOpenNotifPerm">🔔 Quyền thông báo</button>
-        <button onclick="openNativePermissionSetting('location')" style="width:100%;background:#0D9E75;border:0;border-radius:10px;color:white;font-size:13px;font-weight:800;padding:12px;cursor:pointer" id="btnOpenLocationPerm">📍 Quyền vị trí</button>
-        <button onclick="openNativePermissionSetting('battery')" style="width:100%;background:#F5A623;border:0;border-radius:10px;color:white;font-size:13px;font-weight:800;padding:12px;cursor:pointer" id="btnOpenBatteryPerm">🔋 Cài đặt pin</button>
-      </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:0 16px 10px;flex-shrink:0">
+      <div style="font-size:12px;color:var(--text3)" id="notifHistoryCount">0 thông báo</div>
+      <button onclick="clearNotifHistory()" style="font-size:12px;color:#E8433A;background:none;border:none;cursor:pointer;font-family:Nunito,sans-serif;padding:4px 8px;border-radius:8px;font-weight:700">Xóa tất cả</button>
+    </div>
+    <div id="notifHistoryList" style="overflow-y:auto;flex:1;padding-bottom:16px">
+      <!-- rendered by renderNotifHistory() -->
     </div>
   </div>
 </div>

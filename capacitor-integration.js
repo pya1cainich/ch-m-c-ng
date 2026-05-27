@@ -18,6 +18,19 @@
     return;
   }
 
+  // ── Ghi lịch sử thông báo vào localStorage (max 100) ────────────
+  function _logNotifHistory(title, body, type, scheduledFor) {
+    try {
+      var arr = JSON.parse(localStorage.getItem('cp22_notif_history') || '[]');
+      arr.unshift({ title: title || '', body: body || '', type: type, at: Date.now(), scheduledFor: scheduledFor || null });
+      if (arr.length > 100) arr = arr.slice(0, 100);
+      localStorage.setItem('cp22_notif_history', JSON.stringify(arr));
+      // Hiện badge trên chuông
+      var dot = document.getElementById('notifDot');
+      if (dot) dot.style.display = 'block';
+    } catch(e) {}
+  }
+
   // ── Hàm init chính — gọi sau khi Capacitor ready ───────────────────
   async function initCcNative() {
     try {
@@ -226,6 +239,7 @@
           try {
             await ensureNotificationPermission();
             await NativePlugin.sendNotification({ title, body, id: id || 1 });
+            _logNotifHistory(title, body, 'sent', null);
             console.log('[ccNative] Sent:', title);
           } catch(e) {
             console.error('[ccNative] sendNotification lỗi:', e);
@@ -248,6 +262,7 @@
             if (extra && extra.job)     payload.job     = String(extra.job);
             if (extra && extra.data)    payload.data    = String(extra.data);
             await NativePlugin.scheduleNotification(payload);
+            _logNotifHistory(title, body, 'scheduled', atMs);
             console.log('[ccNative] Scheduled id=' + id + ' at=' + new Date(atMs).toLocaleString());
           } catch(e) {
             console.error('[ccNative] scheduleNotification lỗi:', e);
