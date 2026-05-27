@@ -50,6 +50,8 @@ public class AttendanceState {
     static final String KEY_LAST_GPS_LNG           = "lastGpsLng";
     static final String KEY_LAST_GPS_AT            = "lastGpsAt";
     static final String KEY_MOTION_STATUS          = "motionStatus";
+    static final String KEY_MOTION_LAST_EVENT_AT   = "motionLastEventAt";
+    static final String KEY_MOTION_STALE_LOG_AT    = "motionStaleLogAt";
     static final String KEY_PENDING_EVENT          = "pendingEvent";
     static final String KEY_PENDING_EVENT_AT       = "pendingEventAt";
 
@@ -94,10 +96,18 @@ public class AttendanceState {
 
     // ─── Helper: lưu state ───────────────────────────────────────────────────
     public static void setState(Context ctx, String newState) {
+        String oldState = getState(ctx);
         prefs(ctx).edit()
             .putString(KEY_STATE, newState)
             .putLong(KEY_STATE_CHANGED_AT, System.currentTimeMillis())
             .apply();
+        if (oldState == null) oldState = "";
+        if (newState == null) newState = "";
+        if (!oldState.equals(newState)) {
+            NativeAuditTrail.log(ctx, "STATE", oldState + " -> " + newState, "transition");
+        } else {
+            NativeAuditTrail.log(ctx, "STATE", newState, "state set same");
+        }
     }
 
     // ─── Helper: lưu pending event để JS đọc khi mở app ─────────────────────
@@ -106,6 +116,7 @@ public class AttendanceState {
             .putString(KEY_PENDING_EVENT, eventType + "|" + detail)
             .putLong(KEY_PENDING_EVENT_AT, System.currentTimeMillis())
             .apply();
+        NativeAuditTrail.log(ctx, "EVENT", String.valueOf(eventType), String.valueOf(detail));
     }
 
     // ─── Helper: đọc và xoá pending event ────────────────────────────────────

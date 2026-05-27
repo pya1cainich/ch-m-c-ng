@@ -869,20 +869,20 @@ public class ChamCongNativePlugin extends Plugin {
                 return;
             }
 
-            if (tryOpenAppBatteryUsageSettings(pkgUri)) {
-                opened = true;
-                openedTarget = "appBatteryUsage";
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && tryOpenSettings(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri))) {
                 opened = true;
                 openedTarget = "requestIgnoreOptimization";
-            } else if (tryOpenAppDetailsSettings(pkgUri)) {
-                opened = true;
-                openedTarget = "appDetails";
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && tryOpenSettings(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))) {
                 opened = true;
                 openedTarget = "batteryOptimizationList";
+            } else if (tryOpenAppDetailsSettings(pkgUri)) {
+                opened = true;
+                openedTarget = "appDetails";
+            } else if (tryOpenAppBatteryUsageSettings(pkgUri)) {
+                opened = true;
+                openedTarget = "appBatteryUsage";
             } else if (tryOpenSettings(new Intent(Intent.ACTION_POWER_USAGE_SUMMARY))) {
                 opened = true;
                 openedTarget = "powerUsageSummary";
@@ -1007,6 +1007,12 @@ public class ChamCongNativePlugin extends Plugin {
     }
 
     private boolean tryOpenAppBatteryUsageSettings(Uri pkgUri) {
+        // Một số bản ROM Samsung (One UI) crash trong AdvancedPowerUsageDetail.
+        // Tránh màn này trên Samsung, fallback sang các settings khác ổn định hơn.
+        String manufacturer = Build.MANUFACTURER == null
+            ? ""
+            : Build.MANUFACTURER.toLowerCase(Locale.US);
+        if (manufacturer.contains("samsung")) return false;
         Intent intent = new Intent("android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL");
         intent.setData(pkgUri);
         intent.putExtra("android.provider.extra.APP_PACKAGE", getContext().getPackageName());

@@ -42,6 +42,9 @@ var _lastInputAudit = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
 var _lastUiStateKey = '';
 var _uiScanTimer = null;
 var _fullTraceInitDone = false;
+var _nativeAudit = {ccNative:false, plugin:false};
+var _nativeAuditCursor = 0;
+var _nativeAuditTimer = null;
 
 var _storageProto = window.Storage && window.Storage.prototype;
 var _rawStorage = {
@@ -167,6 +170,14 @@ function _persistLogs(){
   }catch(e){}
 }
 
+function _persistNow(){
+  if(_persistTimer){
+    clearTimeout(_persistTimer);
+    _persistTimer = null;
+  }
+  _persistLogs();
+}
+
 function _add(type, tag, msg, detail){
   var now = new Date();
   type = COLORS[type] ? type : 'INFO';
@@ -190,6 +201,61 @@ function _add(type, tag, msg, detail){
   }
   if(_panelOpen) _queueEntry(entry);
   _schedulePersist();
+}
+
+function _addNativeAuditEntry(row){
+  if(!row) return;
+  var atMs = Number(row.at || 0);
+  var now = atMs > 0 ? new Date(atMs) : new Date();
+  var type = 'NATIVE';
+  var tag = row.tag ? String(row.tag) : 'NATV';
+  var msg = row.msg ? String(row.msg) : '';
+  var detail = row.detail ? String(row.detail) : '';
+  var seq = Number(row.seq || 0);
+  var entry = {
+    type: type,
+    tag: _compact(tag, 24),
+    msg: _compact(msg, 500),
+    detail: detail ? _compact(detail, 700) : '',
+    ts: _timeStamp(now),
+    date: _dateStamp(now),
+    at: now.toISOString(),
+    n: seq > 0 ? seq : _nextSeq++
+  };
+  _logs.push(entry);
+  while(_logs.length > MAX_ENTRIES) _logs.shift();
+  if(_panelOpen) _queueEntry(entry);
+  _schedulePersist();
+}
+
+function _pollNativeAuditLogs(){
+  try{
+    if(!window.Capacitor || !window.Capacitor.Plugins || !window.Capacitor.Plugins.AttendanceBrain) return;
+    var Brain = window.Capacitor.Plugins.AttendanceBrain;
+    if(!Brain.getAuditLogs) return;
+    Brain.getAuditLogs({ since:_nativeAuditCursor, limit:260 }).then(function(res){
+      if(!res || !res.logs) return;
+      var rows = Array.isArray(res.logs) ? res.logs : [];
+      for(var i = 0; i < rows.length; i++){
+        _addNativeAuditEntry(rows[i]);
+      }
+      if(typeof res.latestSeq === 'number' && res.latestSeq > _nativeAuditCursor){
+        _nativeAuditCursor = res.latestSeq;
+      } else if(rows.length){
+        var last = rows[rows.length - 1];
+        var s = Number(last && last.seq || 0);
+        if(s > _nativeAuditCursor) _nativeAuditCursor = s;
+      }
+    }).catch(function(e){
+      if(FULL_TRACE) _add('WARN', 'NATV', 'poll native audit failed', String(e && e.message || e));
+    });
+  }catch(e){}
+}
+
+function _startNativeAuditPolling(){
+  if(_nativeAuditTimer) return;
+  _nativeAuditTimer = setInterval(_pollNativeAuditLogs, 1200);
+  setTimeout(_pollNativeAuditLogs, 120);
 }
 
 function _argsToStr(args){
@@ -265,6 +331,68 @@ function _tryHooks(){
 
 var _hookTimer = setInterval(_tryHooks, 400);
 setTimeout(function(){ clearInterval(_hookTimer); }, 15000);
+
+function _safeJson(value, limit){
+  try{
+    return _compact(JSON.stringify(value), limit || 320);
+  }catch(e){
+    return _compact(String(value), limit || 320);
+  }
+}
+
+function _wrapAsyncBridge(owner, key, ns){
+  if(!owner || typeof owner[key] !== 'function') return false;
+  var raw = owner[key];
+  if(raw.__dbgAuditWrapped) return true;
+  owner[key] = function(){
+    var args = Array.prototype.slice.call(arguments || []);
+    _add('NATIVE', ns, key + '()', 'args=' + _safeJson(args, 260));
+    var ret;
+    try{
+      ret = raw.apply(this, arguments);
+    }catch(err){
+      _add('ERROR', ns, key + ' throw', _compact(String(err && err.message || err), 420));
+      throw err;
+    }
+    if(ret && typeof ret.then === 'function'){
+      return ret.then(function(res){
+        _add('NATIVE', ns, key + ' ok', 'res=' + _safeJson(res, 320));
+        return res;
+      }).catch(function(err){
+        _add('ERROR', ns, key + ' fail', _compact(String(err && err.message || err), 420));
+        throw err;
+      });
+    }
+    _add('NATIVE', ns, key + ' sync', 'res=' + _safeJson(ret, 320));
+    return ret;
+  };
+  owner[key].__dbgAuditWrapped = true;
+  return true;
+}
+
+function _installNativeBridgeAudit(){
+  if(!_nativeAudit.ccNative && window.ccNative){
+    var wrappedCc = 0;
+    Object.keys(window.ccNative).forEach(function(k){
+      if(_wrapAsyncBridge(window.ccNative, k, 'CCN')) wrappedCc++;
+    });
+    if(wrappedCc > 0){
+      _nativeAudit.ccNative = true;
+      _add('NATIVE', 'CCN', 'ccNative hooks installed', 'count=' + wrappedCc);
+    }
+  }
+  if(!_nativeAudit.plugin && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativePlugin){
+    var nativePlugin = window.Capacitor.Plugins.NativePlugin;
+    var wrappedPlugin = 0;
+    Object.keys(nativePlugin).forEach(function(k){
+      if(_wrapAsyncBridge(nativePlugin, k, 'NPL')) wrappedPlugin++;
+    });
+    if(wrappedPlugin > 0){
+      _nativeAudit.plugin = true;
+      _add('NATIVE', 'NPL', 'NativePlugin hooks installed', 'count=' + wrappedPlugin);
+    }
+  }
+}
 
 function _targetElement(target){
   if(!target || target === window || target === document) return null;
@@ -755,6 +883,12 @@ window.dbgOpen = function(){
   _rerender();
   _updateStatus();
   _add('ACT', 'DEBUG', 'open debug monitor');
+  var traceBtn = document.getElementById('dbgTraceBtn');
+  if(traceBtn){
+    traceBtn.textContent = FULL_TRACE ? 'Trace:ON' : 'Trace:OFF';
+    traceBtn.style.background = FULL_TRACE ? '#DCFCE7' : '#F3F4F6';
+    traceBtn.style.color = FULL_TRACE ? '#166534' : '#374151';
+  }
   clearInterval(window._dbgStatusTimer);
   window._dbgStatusTimer = setInterval(function(){
     if(_panelOpen) _updateStatus();
@@ -777,6 +911,12 @@ window.dbgClear = function(){
   _logs = [];
   _nextSeq = 0;
   _safeStorageRemove(_localStore(), STORAGE_KEY);
+  try{
+    if(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AttendanceBrain && window.Capacitor.Plugins.AttendanceBrain.clearAuditLogs){
+      window.Capacitor.Plugins.AttendanceBrain.clearAuditLogs();
+      _nativeAuditCursor = 0;
+    }
+  }catch(e){}
   var body = document.getElementById('dbgBody');
   if(body) body.innerHTML = '<div style="text-align:center;padding:20px;color:#9CA3AF;font-size:12px">Log da duoc xoa</div>';
   _updateStatus();
@@ -836,6 +976,16 @@ window.dbgSetFullTrace = function(on){
     if(store) store.setItem(FULL_TRACE_KEY, FULL_TRACE ? '1' : '0');
   }catch(e){}
   _add('INFO', 'TRACE', 'Full trace ' + (FULL_TRACE ? 'ON' : 'OFF'));
+  var t = document.getElementById('dbgTraceBtn');
+  if(t){
+    t.textContent = FULL_TRACE ? 'Trace:ON' : 'Trace:OFF';
+    t.style.background = FULL_TRACE ? '#DCFCE7' : '#F3F4F6';
+    t.style.color = FULL_TRACE ? '#166534' : '#374151';
+  }
+};
+
+window.dbgToggleFullTrace = function(){
+  window.dbgSetFullTrace(!FULL_TRACE);
 };
 
 window.dbgAudit = function(tag, msg, detail){
@@ -854,7 +1004,16 @@ _installNetworkAudit();
 _installTimerAudit();
 _installUiAudit();
 _tryHooks();
+_installNativeBridgeAudit();
+setInterval(_installNativeBridgeAudit, 1200);
+_startNativeAuditPolling();
 _add('INFO', 'SYS', 'Debug Monitor ready - app-wide audit enabled' + (FULL_TRACE ? ' (FULL)' : ''));
+
+window.addEventListener('beforeunload', _persistNow);
+window.addEventListener('pagehide', _persistNow);
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'hidden') _persistNow();
+});
 
 if(FULL_TRACE && !_fullTraceInitDone){
   _fullTraceInitDone = true;

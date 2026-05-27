@@ -219,10 +219,18 @@ public class NativeGpsService extends Service {
             // Android đã kill service và tự restart lại (START_STICKY)
             // Gửi thông báo yêu cầu người dùng mở app để kích hoạt lại GPS
             android.util.Log.d("NativeGps", "Service restarted by Android after kill");
-            startForeground(NOTIF_ID, buildNotif(NotifTranslations.tr(this, "gpsInterrupted")));
+            if (!safeStartForeground("restart-after-kill", buildNotif(NotifTranslations.tr(this, "gpsInterrupted")))) {
+                getSharedPreferences(GPS_PREFS, MODE_PRIVATE).edit().putBoolean("enabled", false).apply();
+                stopSelf();
+                return START_NOT_STICKY;
+            }
             sendKillNotif();
         } else {
-            startForeground(NOTIF_ID, buildNotif(NotifTranslations.tr(this, "ongoingTracking")));
+            if (!safeStartForeground("normal-start", buildNotif(NotifTranslations.tr(this, "ongoingTracking")))) {
+                getSharedPreferences(GPS_PREFS, MODE_PRIVATE).edit().putBoolean("enabled", false).apply();
+                stopSelf();
+                return START_NOT_STICKY;
+            }
         }
         // ── Brain v2 GPS control (ưu tiên xử lý trước) ─────────────────────
         if (ACTION_BRAIN_GPS_CONTROL.equals(action)) {
@@ -411,8 +419,11 @@ public class NativeGpsService extends Service {
         switch (cmd) {
             case "oneshot":
                 // Lấy 1 GPS fix rồi dừng — không cần foreground notification dài
-                startForeground(NOTIF_ID,
-                    buildNotif(NotifTranslations.tr(this, "ongoingTracking")));
+                if (!safeStartForeground("brain-oneshot",
+                    buildNotif(NotifTranslations.tr(this, "ongoingTracking")))) {
+                    stopLocationUpdates();
+                    return;
+                }
                 startLocationUpdates();
                 // Tự dừng sau 30s nếu không lấy được GPS
                 new Handler(Looper.getMainLooper()).postDelayed(() -> {
@@ -432,12 +443,28 @@ public class NativeGpsService extends Service {
                 getSharedPreferences(GPS_PREFS, MODE_PRIVATE).edit()
                     .putLong("brain_interval_ms", ms)
                     .apply();
-                startForeground(NOTIF_ID,
-                    buildNotif(NotifTranslations.tr(this, "ongoingTracking")));
+                if (!safeStartForeground("brain-set-interval",
+                    buildNotif(NotifTranslations.tr(this, "ongoingTracking")))) {
+                    stopLocationUpdates();
+                    return;
+                }
                 // Restart location updates với interval mới
                 stopLocationUpdates();
                 startLocationUpdates();
                 break;
+        }
+    }
+
+    private boolean safeStartForeground(String reason, Notification notification) {
+        try {
+            startForeground(NOTIF_ID, notification);
+            return true;
+        } catch (SecurityException se) {
+            android.util.Log.e("NativeGps", "startForeground blocked (" + reason + "): " + se.getMessage());
+            return false;
+        } catch (Exception e) {
+            android.util.Log.e("NativeGps", "startForeground failed (" + reason + "): " + e.getMessage());
+            return false;
         }
     }
 

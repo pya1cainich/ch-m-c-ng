@@ -62,9 +62,13 @@ public class AttendanceBrain {
     public EvalResult evaluate(Context ctx, String triggerSource) {
         EvalResult result = new EvalResult();
         result.action = "NONE";
+        SharedPreferences p0 = AttendanceState.prefs(ctx);
+        auditMotionHealth(ctx, p0, triggerSource);
+        NativeAuditTrail.log(ctx, "BRAIN", "evaluate:start", "trigger=" + triggerSource + " state=" + AttendanceState.getState(ctx));
 
         if (!AttendanceState.isEnabled(ctx)) {
             Log.d(TAG, "[" + triggerSource + "] disabled — skip");
+            NativeAuditTrail.log(ctx, "BRAIN", "evaluate:skip", "disabled trigger=" + triggerSource);
             return result;
         }
 
@@ -117,6 +121,7 @@ public class AttendanceBrain {
 
         // ─── Điều chỉnh GPS sau khi quyết định ─────────────────────────────
         adjustGps(ctx, result.newState);
+        auditResult(ctx, triggerSource, result);
 
         return result;
     }
@@ -630,6 +635,7 @@ public class AttendanceBrain {
                 state.equals(AttendanceState.MAYBE_LEFT_WORK)) {
                 AttendanceState.setState(ctx, AttendanceState.OUTSIDE);
             }
+            NativeAuditTrail.log(ctx, "BRAIN", "day rollover", lastKey + " -> " + todayKey);
 
             // Đặt lại alarm cho ngày mới
             AttendanceAlarmScheduler.get().scheduleForToday(ctx);
@@ -655,6 +661,7 @@ public class AttendanceBrain {
         r.newState = AttendanceState.WAIT_CHECKOUT_CONFIRM;
         r.action = "NONE";
         r.stateChanged = true;
+        NativeAuditTrail.log(ctx, "BRAIN", "open checkout window", "deadlineAt=" + deadlineAt);
         return r;
     }
 
@@ -663,6 +670,7 @@ public class AttendanceBrain {
             .remove(AttendanceState.KEY_CHECKIN_WINDOW_START)
             .remove(AttendanceState.KEY_CHECKIN_SIGNAL_ON_MS)
             .apply();
+        NativeAuditTrail.log(ctx, "BRAIN", "reset checkin window", "");
     }
 
     private void resetCheckoutWindow(Context ctx) {
@@ -670,12 +678,56 @@ public class AttendanceBrain {
             .remove(AttendanceState.KEY_CHECKOUT_WINDOW_START)
             .remove(AttendanceState.KEY_CHECKOUT_DEADLINE_AT)
             .apply();
+        NativeAuditTrail.log(ctx, "BRAIN", "reset checkout window", "");
     }
 
     private void resetMaybeLeft(Context ctx) {
         AttendanceState.prefs(ctx).edit()
             .remove(AttendanceState.KEY_MAYBE_LEFT_SINCE)
             .apply();
+        NativeAuditTrail.log(ctx, "BRAIN", "reset maybe left", "");
+    }
+
+    private void auditResult(Context ctx, String triggerSource, EvalResult r) {
+        if (r == null) return;
+        String oldState = r.oldState == null ? "" : r.oldState;
+        String newState = r.newState == null ? "" : r.newState;
+        String action = r.action == null ? "NONE" : r.action;
+        String detail = r.detail == null ? "" : r.detail;
+        NativeAuditTrail.log(
+            ctx,
+            "BRAIN",
+            "evaluate:end",
+            "trigger=" + triggerSource
+                + " old=" + oldState
+                + " new=" + newState
+                + " changed=" + r.stateChanged
+                + " action=" + action
+                + (detail.isEmpty() ? "" : " detail=" + detail)
+        );
+    }
+
+    private void auditMotionHealth(Context ctx, SharedPreferences p, String triggerSource) {
+        long now = System.currentTimeMillis();
+        long lastMotionAt = p.getLong(AttendanceState.KEY_MOTION_LAST_EVENT_AT, 0L);
+        String motionStatus = p.getString(AttendanceState.KEY_MOTION_STATUS, AttendanceState.MOTION_UNKNOWN);
+        long lastStaleLogAt = p.getLong(AttendanceState.KEY_MOTION_STALE_LOG_AT, 0L);
+        long staleMs = 15L * 60L * 1000L;
+        long throttleMs = 5L * 60L * 1000L;
+
+        if (lastMotionAt <= 0L) {
+            if (now - lastStaleLogAt >= throttleMs) {
+                NativeAuditTrail.log(ctx, "MOTION", "no motion event yet", "status=" + motionStatus + " trigger=" + triggerSource);
+                p.edit().putLong(AttendanceState.KEY_MOTION_STALE_LOG_AT, now).apply();
+            }
+            return;
+        }
+
+        long age = now - lastMotionAt;
+        if (age >= staleMs && now - lastStaleLogAt >= throttleMs) {
+            NativeAuditTrail.log(ctx, "MOTION", "no recent motion event", "ageSec=" + (age / 1000L) + " status=" + motionStatus + " trigger=" + triggerSource);
+            p.edit().putLong(AttendanceState.KEY_MOTION_STALE_LOG_AT, now).apply();
+        }
     }
 
     // ─── WiFi ─────────────────────────────────────────────────────────────────

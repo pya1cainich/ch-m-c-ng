@@ -32,7 +32,10 @@ public class MotionTransitionReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         if (intent == null) return;
-        if (!ActivityTransitionResult.hasResult(intent)) return;
+        if (!ActivityTransitionResult.hasResult(intent)) {
+            NativeAuditTrail.log(context, "MOTION", "no transition result", "intent without ActivityTransitionResult");
+            return;
+        }
 
         final Context ctx = context.getApplicationContext();
         final PendingResult pendingResult = goAsync();
@@ -47,10 +50,16 @@ public class MotionTransitionReceiver extends BroadcastReceiver {
     }
 
     private void handleMotionResult(Context ctx, Intent intent) {
-        if (!AttendanceState.isEnabled(ctx)) return;
+        if (!AttendanceState.isEnabled(ctx)) {
+            NativeAuditTrail.log(ctx, "MOTION", "ignored", "brain disabled");
+            return;
+        }
 
         ActivityTransitionResult result = ActivityTransitionResult.extractResult(intent);
-        if (result == null) return;
+        if (result == null) {
+            NativeAuditTrail.log(ctx, "MOTION", "extract result null", "");
+            return;
+        }
 
         for (com.google.android.gms.location.ActivityTransitionEvent event :
                 result.getTransitionEvents()) {
@@ -62,9 +71,12 @@ public class MotionTransitionReceiver extends BroadcastReceiver {
                 ? "ENTER" : "EXIT";
 
             Log.d(TAG, "Motion: " + actName + " " + transName);
+            NativeAuditTrail.log(ctx, "MOTION", actName + " " + transName, "state=" + AttendanceState.getState(ctx));
 
             if (transition == ActivityTransition.ACTIVITY_TRANSITION_ENTER) {
                 handleTransitionEnter(ctx, actType);
+            } else {
+                NativeAuditTrail.log(ctx, "MOTION", "EXIT ignored", actName);
             }
         }
     }
@@ -77,6 +89,7 @@ public class MotionTransitionReceiver extends BroadcastReceiver {
             Log.d(TAG, "MOVING detected, state=" + state);
             AttendanceState.prefs(ctx).edit()
                 .putString(AttendanceState.KEY_MOTION_STATUS, AttendanceState.MOTION_MOVING)
+                .putLong(AttendanceState.KEY_MOTION_LAST_EVENT_AT, System.currentTimeMillis())
                 .apply();
 
             // Bật GPS nếu WiFi không rõ và đang trong trạng thái cần xác minh
@@ -91,8 +104,13 @@ public class MotionTransitionReceiver extends BroadcastReceiver {
                     AttendanceBrain.get().checkWorkSignal(ctx);
                 if (!sig.source.startsWith("wifi")) {
                     Log.d(TAG, "MOVING + no WiFi → request GPS oneshot");
+                    NativeAuditTrail.log(ctx, "MOTION", "moving -> request GPS oneshot", "signal=" + sig.source);
                     NativeGpsService.requestOneShot(ctx);
+                } else {
+                    NativeAuditTrail.log(ctx, "MOTION", "moving but wifi present", "signal=" + sig.source);
                 }
+            } else {
+                NativeAuditTrail.log(ctx, "MOTION", "moving no GPS needed", "state=" + state);
             }
 
             // Evaluate để Brain có thể cập nhật state nếu cần
@@ -103,6 +121,7 @@ public class MotionTransitionReceiver extends BroadcastReceiver {
             Log.d(TAG, "STILL detected, state=" + state);
             AttendanceState.prefs(ctx).edit()
                 .putString(AttendanceState.KEY_MOTION_STATUS, AttendanceState.MOTION_STILL)
+                .putLong(AttendanceState.KEY_MOTION_LAST_EVENT_AT, System.currentTimeMillis())
                 .apply();
 
             // Khi đứng yên: lấy GPS lần cuối nếu đang cần, rồi giảm/tắt
@@ -113,8 +132,10 @@ public class MotionTransitionReceiver extends BroadcastReceiver {
 
             if (isCriticalState) {
                 // Lấy 1 GPS reading cuối rồi tắt
+                NativeAuditTrail.log(ctx, "MOTION", "still -> request final GPS oneshot", "state=" + state);
                 NativeGpsService.requestOneShot(ctx);
             } else {
+                NativeAuditTrail.log(ctx, "MOTION", "still -> stop GPS", "state=" + state);
                 NativeGpsService.stop(ctx);
             }
 

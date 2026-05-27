@@ -52,6 +52,7 @@ public class MotionTransitionManager {
 
     public void register(Context ctx) {
         try {
+            NativeAuditTrail.log(ctx, "MOTION", "register transitions", "");
             List<ActivityTransition> transitions = buildTransitionList();
             ActivityTransitionRequest request = new ActivityTransitionRequest(transitions);
             PendingIntent pi = buildPendingIntent(ctx);
@@ -64,12 +65,16 @@ public class MotionTransitionManager {
                         .putString(AttendanceState.KEY_MOTION_STATUS,
                             AttendanceState.MOTION_UNKNOWN)
                         .apply();
+                    NativeAuditTrail.log(ctx, "MOTION", "register success", "transitions=" + transitions.size());
                 })
-                .addOnFailureListener(e ->
-                    Log.w(TAG, "Motion register failed: " + e.getMessage()));
+                .addOnFailureListener(e -> {
+                    Log.w(TAG, "Motion register failed: " + e.getMessage());
+                    NativeAuditTrail.log(ctx, "MOTION", "register failed", String.valueOf(e.getMessage()));
+                });
 
         } catch (Exception e) {
             Log.e(TAG, "register() error: " + e.getMessage());
+            NativeAuditTrail.log(ctx, "MOTION", "register error", String.valueOf(e.getMessage()));
         }
     }
 
@@ -79,14 +84,21 @@ public class MotionTransitionManager {
 
     public void unregister(Context ctx) {
         try {
+            NativeAuditTrail.log(ctx, "MOTION", "unregister transitions", "");
             PendingIntent pi = buildPendingIntent(ctx);
             ActivityRecognition.getClient(ctx)
                 .removeActivityTransitionUpdates(pi)
-                .addOnSuccessListener(v -> Log.d(TAG, "Motion transitions unregistered"))
-                .addOnFailureListener(e ->
-                    Log.w(TAG, "Motion unregister failed: " + e.getMessage()));
+                .addOnSuccessListener(v -> {
+                    Log.d(TAG, "Motion transitions unregistered");
+                    NativeAuditTrail.log(ctx, "MOTION", "unregister success", "");
+                })
+                .addOnFailureListener(e -> {
+                    Log.w(TAG, "Motion unregister failed: " + e.getMessage());
+                    NativeAuditTrail.log(ctx, "MOTION", "unregister failed", String.valueOf(e.getMessage()));
+                });
         } catch (Exception e) {
             Log.e(TAG, "unregister() error: " + e.getMessage());
+            NativeAuditTrail.log(ctx, "MOTION", "unregister error", String.valueOf(e.getMessage()));
         }
     }
 

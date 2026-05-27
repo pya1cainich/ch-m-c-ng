@@ -882,6 +882,12 @@
 
       /** Đặt lại alarm cho hôm nay (sau khi đổi giờ ca) */
       scheduleAlarms: () => BrainPlugin.scheduleAlarms(),
+
+      /** Kéo native audit log từ seq gần nhất (dùng bởi debug-monitor) */
+      getAuditLogs: (opts) => BrainPlugin.getAuditLogs(opts || {}),
+
+      /** Xoá toàn bộ native audit log */
+      clearAuditLogs: () => BrainPlugin.clearAuditLogs(),
     };
 
     console.log('[cc-int] ccNative.brain ready');

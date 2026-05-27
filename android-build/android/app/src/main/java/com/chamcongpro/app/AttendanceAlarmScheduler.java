@@ -59,8 +59,10 @@ public class AttendanceAlarmScheduler {
 
         if (shiftInHour < 0 || shiftOutHour < 0) {
             Log.d(TAG, "scheduleForToday: no shift config — skip");
+            NativeAuditTrail.log(ctx, "ALARM", "scheduleForToday skip", "missing shift config");
             return;
         }
+        NativeAuditTrail.log(ctx, "ALARM", "scheduleForToday", "shiftIn=" + shiftInHour + ":" + shiftInMin + " shiftOut=" + shiftOutHour + ":" + shiftOutMin + " beforeMin=" + beforeMin);
 
         long shiftInMs  = todayTimeMs(shiftInHour,  shiftInMin);
         long shiftOutMs = todayTimeMs(shiftOutHour, shiftOutMin);
@@ -94,11 +96,13 @@ public class AttendanceAlarmScheduler {
     public void scheduleCheckoutDeadline(Context ctx, long deadlineAt) {
         setExact(ctx, deadlineAt, RC_DEADLINE, ALARM_CHECKOUT_DEADLINE);
         Log.d(TAG, "Alarm CHECKOUT_DEADLINE at " + AttendanceBrain.formatTime(deadlineAt));
+        NativeAuditTrail.log(ctx, "ALARM", "schedule deadline", "at=" + deadlineAt);
     }
 
     public void cancelCheckoutDeadline(Context ctx) {
         cancel(ctx, RC_DEADLINE, ALARM_CHECKOUT_DEADLINE);
         Log.d(TAG, "Cancelled CHECKOUT_DEADLINE");
+        NativeAuditTrail.log(ctx, "ALARM", "cancel deadline", "");
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -109,7 +113,10 @@ public class AttendanceAlarmScheduler {
         SharedPreferences p = AttendanceState.prefs(ctx);
         int shiftOutHour = p.getInt(AttendanceState.KEY_SHIFT_END_HOUR, -1);
         int shiftOutMin  = p.getInt(AttendanceState.KEY_SHIFT_END_MIN,  0);
-        if (shiftOutHour < 0) return;
+        if (shiftOutHour < 0) {
+            NativeAuditTrail.log(ctx, "ALARM", "schedule remind skip", "shiftOut not configured");
+            return;
+        }
 
         long shiftOutMs = todayTimeMs(shiftOutHour, shiftOutMin);
         long now = System.currentTimeMillis();
@@ -129,6 +136,7 @@ public class AttendanceAlarmScheduler {
         cancel(ctx, RC_REMIND,     ALARM_CHECKOUT_REMIND);
         cancel(ctx, RC_DEADLINE,   ALARM_CHECKOUT_DEADLINE);
         Log.d(TAG, "All alarms cancelled");
+        NativeAuditTrail.log(ctx, "ALARM", "cancel all", "");
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -137,7 +145,10 @@ public class AttendanceAlarmScheduler {
 
     private void setExact(Context ctx, long triggerAt, int requestCode, String alarmType) {
         AlarmManager am = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
-        if (am == null) return;
+        if (am == null) {
+            NativeAuditTrail.log(ctx, "ALARM", "setExact skip", "AlarmManager null " + alarmType);
+            return;
+        }
 
         PendingIntent pi = buildPendingIntent(ctx, requestCode, alarmType);
 
@@ -155,6 +166,7 @@ public class AttendanceAlarmScheduler {
             }
         } catch (SecurityException e) {
             Log.w(TAG, "setExact SecurityException: " + e.getMessage());
+            NativeAuditTrail.log(ctx, "ALARM", "setExact security fallback", alarmType + " " + e.getMessage());
             am.set(AlarmManager.RTC_WAKEUP, triggerAt, pi);
         }
     }

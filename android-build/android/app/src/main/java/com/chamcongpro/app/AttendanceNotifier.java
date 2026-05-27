@@ -137,8 +137,10 @@ public class AttendanceNotifier {
 
             nm.notify(nid, builder.build());
             Log.d(TAG, "notify [" + channelId + "] " + title);
+            NativeAuditTrail.log(ctx, "NOTIFY", title, "channel=" + channelId + " nid=" + nid + " body=" + body);
         } catch (Exception e) {
             Log.w(TAG, "notify error: " + e.getMessage());
+            NativeAuditTrail.log(ctx, "NOTIFY", "error", String.valueOf(e.getMessage()));
         }
     }
 

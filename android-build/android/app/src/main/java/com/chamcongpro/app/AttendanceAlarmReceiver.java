@@ -28,6 +28,7 @@ public class AttendanceAlarmReceiver extends BroadcastReceiver {
         if (alarmType == null) alarmType = "UNKNOWN";
 
         Log.d(TAG, "onReceive alarmType=" + alarmType);
+        NativeAuditTrail.log(context, "ALARM", "received", alarmType);
 
         final Context ctx = context.getApplicationContext();
         final String type = alarmType;
@@ -46,6 +47,7 @@ public class AttendanceAlarmReceiver extends BroadcastReceiver {
     private void handleAlarm(Context ctx, String alarmType) {
         if (!AttendanceState.isEnabled(ctx)) {
             Log.d(TAG, alarmType + " — disabled, skip");
+            NativeAuditTrail.log(ctx, "ALARM", "skip disabled", alarmType);
             return;
         }
 
@@ -78,6 +80,7 @@ public class AttendanceAlarmReceiver extends BroadcastReceiver {
 
             default:
                 Log.w(TAG, "Unknown alarm type: " + alarmType);
+                NativeAuditTrail.log(ctx, "ALARM", "unknown type", alarmType);
                 break;
         }
     }
@@ -90,16 +93,19 @@ public class AttendanceAlarmReceiver extends BroadcastReceiver {
 
         if (!checkedIn) {
             Log.d(TAG, "CHECKOUT_REMIND: chưa check-in hôm nay — skip");
+            NativeAuditTrail.log(ctx, "ALARM", "checkout_remind skip", "not checked in");
             return;
         }
 
         if (checkedOut) {
             Log.d(TAG, "CHECKOUT_REMIND: đã checkout — skip");
+            NativeAuditTrail.log(ctx, "ALARM", "checkout_remind skip", "already checked out");
             return;
         }
 
         // Đã check-in mà chưa checkout → nhắc
         Log.d(TAG, "CHECKOUT_REMIND: đã check-in nhưng chưa checkout — notify");
+        NativeAuditTrail.log(ctx, "ALARM", "checkout_remind evaluate", "checked-in but not checked-out");
 
         // Chạy evaluate trước (có thể đã rời công ty, cần xử lý)
         AttendanceBrain.EvalResult result =
@@ -111,6 +117,7 @@ public class AttendanceAlarmReceiver extends BroadcastReceiver {
             if (!state.equals(AttendanceState.CHECKED_OUT) &&
                 !state.equals(AttendanceState.WAIT_CHECKOUT_CONFIRM)) {
                 AttendanceNotifier.notifyCheckoutRemind(ctx);
+                NativeAuditTrail.log(ctx, "ALARM", "checkout_remind notified", "state=" + state);
                 AttendanceState.setPendingEvent(ctx,
                     AttendanceState.EVENT_CHECKOUT_REMIND,
                     AttendanceBrain.formatTime(System.currentTimeMillis()));

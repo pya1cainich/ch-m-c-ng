@@ -48,6 +48,7 @@ public class AttendanceBrainPlugin extends Plugin {
     public void syncConfig(PluginCall call) {
         Context ctx = getContext();
         SharedPreferences.Editor ed = AttendanceState.prefs(ctx).edit();
+        NativeAuditTrail.log(ctx, "PLUGIN", "syncConfig()", "");
 
         try {
             ed.putBoolean(AttendanceState.KEY_ENABLED,
@@ -105,6 +106,7 @@ public class AttendanceBrainPlugin extends Plugin {
 
             ed.apply();
             Log.d(TAG, "syncConfig OK");
+            NativeAuditTrail.log(ctx, "PLUGIN", "syncConfig ok", "");
 
             JSObject ret = new JSObject();
             ret.put("ok", true);
@@ -112,6 +114,7 @@ public class AttendanceBrainPlugin extends Plugin {
 
         } catch (Exception e) {
             Log.e(TAG, "syncConfig error: " + e.getMessage());
+            NativeAuditTrail.log(ctx, "PLUGIN", "syncConfig error", String.valueOf(e.getMessage()));
             call.reject("syncConfig error: " + e.getMessage());
         }
     }
@@ -123,6 +126,7 @@ public class AttendanceBrainPlugin extends Plugin {
     @PluginMethod
     public void start(PluginCall call) {
         Context ctx = getContext();
+        NativeAuditTrail.log(ctx, "PLUGIN", "start()", "");
         try {
             AttendanceState.prefs(ctx).edit()
                 .putBoolean(AttendanceState.KEY_ENABLED, true)
@@ -141,6 +145,7 @@ public class AttendanceBrainPlugin extends Plugin {
             ).start();
 
             Log.d(TAG, "start() OK");
+            NativeAuditTrail.log(ctx, "PLUGIN", "start ok", "");
             JSObject ret = new JSObject();
             ret.put("ok", true);
             ret.put("motionReady", true);
@@ -149,6 +154,7 @@ public class AttendanceBrainPlugin extends Plugin {
 
         } catch (Exception e) {
             Log.e(TAG, "start error: " + e.getMessage());
+            NativeAuditTrail.log(ctx, "PLUGIN", "start error", String.valueOf(e.getMessage()));
             call.reject("start error: " + e.getMessage());
         }
     }
@@ -160,6 +166,7 @@ public class AttendanceBrainPlugin extends Plugin {
     @PluginMethod
     public void stop(PluginCall call) {
         Context ctx = getContext();
+        NativeAuditTrail.log(ctx, "PLUGIN", "stop()", "");
         try {
             AttendanceState.prefs(ctx).edit()
                 .putBoolean(AttendanceState.KEY_ENABLED, false)
@@ -170,11 +177,13 @@ public class AttendanceBrainPlugin extends Plugin {
             NativeGpsService.stop(ctx);
 
             Log.d(TAG, "stop() OK");
+            NativeAuditTrail.log(ctx, "PLUGIN", "stop ok", "");
             JSObject ret = new JSObject();
             ret.put("ok", true);
             call.resolve(ret);
 
         } catch (Exception e) {
+            NativeAuditTrail.log(ctx, "PLUGIN", "stop error", String.valueOf(e.getMessage()));
             call.reject("stop error: " + e.getMessage());
         }
     }
@@ -208,6 +217,7 @@ public class AttendanceBrainPlugin extends Plugin {
     public void setState(PluginCall call) {
         String state = call.getString("state");
         if (state == null) { call.reject("state required"); return; }
+        NativeAuditTrail.log(getContext(), "PLUGIN", "setState()", "state=" + state);
 
         AttendanceState.setState(getContext(), state);
 
@@ -231,6 +241,7 @@ public class AttendanceBrainPlugin extends Plugin {
     @PluginMethod
     public void runRecovery(PluginCall call) {
         Context ctx = getContext();
+        NativeAuditTrail.log(ctx, "PLUGIN", "runRecovery()", "");
         new Thread(() -> {
             AttendanceBrain.EvalResult result =
                 AttendanceBrain.get().runRecovery(ctx);
@@ -252,6 +263,7 @@ public class AttendanceBrainPlugin extends Plugin {
     @PluginMethod
     public void consumePendingEvent(PluginCall call) {
         String event = AttendanceState.consumePendingEvent(getContext());
+        NativeAuditTrail.log(getContext(), "PLUGIN", "consumePendingEvent()", event == null ? "none" : event);
 
         JSObject ret = new JSObject();
         if (event != null) {
@@ -271,6 +283,7 @@ public class AttendanceBrainPlugin extends Plugin {
 
     @PluginMethod
     public void requestOneShotGps(PluginCall call) {
+        NativeAuditTrail.log(getContext(), "PLUGIN", "requestOneShotGps()", "");
         NativeGpsService.requestOneShot(getContext());
         JSObject ret = new JSObject();
         ret.put("ok", true);
@@ -286,6 +299,7 @@ public class AttendanceBrainPlugin extends Plugin {
         double lat = call.getDouble("lat", 0d);
         double lng = call.getDouble("lng", 0d);
         long   ts  = System.currentTimeMillis();
+        NativeAuditTrail.log(getContext(), "PLUGIN", "updateGpsResult()", "lat=" + lat + " lng=" + lng);
 
         AttendanceState.prefs(getContext()).edit()
             .putLong(AttendanceState.KEY_LAST_GPS_LAT, Double.doubleToLongBits(lat))
@@ -311,7 +325,34 @@ public class AttendanceBrainPlugin extends Plugin {
 
     @PluginMethod
     public void scheduleAlarms(PluginCall call) {
+        NativeAuditTrail.log(getContext(), "PLUGIN", "scheduleAlarms()", "");
         AttendanceAlarmScheduler.get().scheduleForToday(getContext());
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void getAuditLogs(PluginCall call) {
+        Context ctx = getContext();
+        long since = 0L;
+        try {
+            Long s = call.getLong("since", 0L);
+            since = s == null ? 0L : s;
+        } catch (Exception ignored) {}
+        int limit = call.getInt("limit", 200);
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
+        ret.put("logs", NativeAuditTrail.getSince(ctx, since, limit));
+        ret.put("latestSeq", NativeAuditTrail.latestSeq(ctx));
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void clearAuditLogs(PluginCall call) {
+        Context ctx = getContext();
+        NativeAuditTrail.clear(ctx);
+        NativeAuditTrail.log(ctx, "PLUGIN", "clearAuditLogs()", "");
         JSObject ret = new JSObject();
         ret.put("ok", true);
         call.resolve(ret);
