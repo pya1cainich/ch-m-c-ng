@@ -1636,6 +1636,7 @@ function saConfigurePolling(){
   if(_sa.nativeBrainFull){
     saStopGps();
     saStopWifiPoll();
+    saMotionStop();
     return;
   }
   // Wi-Fi luôn chạy — là tín hiệu chính để biết khi nào cần bật/tắt GPS
@@ -1644,6 +1645,7 @@ function saConfigurePolling(){
   // Đã tan ca → tắt GPS tới mốc 7h45 sau checkout, rồi bật lại để chuẩn bị ca mới.
   if(_saPostCheckoutSleepMs(Date.now()) > 0 && !saHasOpenAttendance()){
     saStopGps();
+    saMotionStop();
     return;
   }
 
@@ -1651,6 +1653,7 @@ function saConfigurePolling(){
   // Wi-Fi lạ (vd quán cà phê) không được tính → vẫn cần GPS để biết đang ở đâu
   if(saIsConnectedToSavedWifi()){
     saStopGps();
+    saMotionStop();
     return;
   }
 
@@ -1661,12 +1664,16 @@ function saConfigurePolling(){
     interval = TIMING.GPS_POLL_NEAR_SHIFT_MS;   // 30s — đang xác nhận vào ca
   } else if(s === STATE.WORKING){
     interval = TIMING.GPS_POLL_BACKUP_MS;        // 2p — trong ca, dùng GPS backup
+    saMotionStart();                              // bật motion detector khi đang làm
   } else if(s === STATE.WAIT_CHECKOUT_CONFIRM){
     interval = TIMING.GPS_POLL_TRAVEL_MS;        // 90s — đang xác nhận tan ca
+    saMotionStop();
   } else if(s === STATE.HOME){
     interval = TIMING.GPS_HOME_CHECK_MS;         // 2p — ở nhà nhưng Wi-Fi tắt
+    saMotionStop();
   } else {
     interval = TIMING.GPS_POLL_TRAVEL_MS;        // 90s — đang di chuyển
+    saMotionStop();
   }
   saStartGps(interval);
 }
@@ -2991,6 +2998,7 @@ function saDisable(){
   saSyncLegacyAutoSwitch(false);
   saStopGps();
   saStopWifiPoll();
+  saMotionStop();
   // saStopBtsPoll đã bỏ — không còn poll BTS
   saBrainStop('saDisable');
   saSave();
@@ -3468,6 +3476,111 @@ window.SA_STATE = STATE;
 installGpsResumeHooks();
 installCapacitorGpsResumeHook();
 setTimeout(installCapacitorGpsResumeHook, 2000);
+
+/* ═══════════════════════════════════════════════════════════════════════
+   MOTION DETECTOR — DeviceMotion API
+   Chạy khi state=WORKING + không có Wi-Fi công ty.
+   Khi phát hiện di chuyển → gọi saGpsPoll() ngay, không đợi timer 2p.
+   Hoạt động trong Android WebView, không cần native plugin.
+   ═══════════════════════════════════════════════════════════════════════ */
+var _saMotion = {
+  active:        false,
+  handler:       null,
+  lastTriggerAt: 0,
+  samples:       [],
+  WINDOW_MS:     2000,   // cửa sổ trượt 2 giây
+  MIN_SAMPLES:   15,     // cần ít nhất 15 mẫu (~0.25s ở 60Hz) mới tính
+  THRESHOLD_LIN: 1.2,    // m/s² mean khi dùng acceleration (không gravity) → đang đi
+  THRESHOLD_VAR: 1.8,    // variance magnitude khi dùng accelerationIncludingGravity
+  COOLDOWN_MS:   30000   // 30s giữa 2 lần trigger GPS
+};
+
+function _saMotionInstall(){
+  _saMotion.handler = function(e){
+    var now = Date.now();
+    var mag = 0;
+    var useGrav = false;
+
+    // Ưu tiên acceleration (đã trừ gravity) — signal sạch hơn
+    var a = e.acceleration;
+    if(a && a.x !== null && a.x !== undefined){
+      mag = Math.sqrt((a.x||0)*(a.x||0) + (a.y||0)*(a.y||0) + (a.z||0)*(a.z||0));
+    } else {
+      var ag = e.accelerationIncludingGravity;
+      if(!ag) return;
+      mag = Math.sqrt((ag.x||0)*(ag.x||0) + (ag.y||0)*(ag.y||0) + (ag.z||0)*(ag.z||0));
+      useGrav = true;
+    }
+
+    // Sliding window — giữ lại mẫu trong 2 giây gần nhất
+    _saMotion.samples.push({mag: mag, t: now});
+    var cutoff = now - _saMotion.WINDOW_MS;
+    var s = _saMotion.samples;
+    var i = 0;
+    while(i < s.length && s[i].t < cutoff) i++;
+    if(i > 0) _saMotion.samples = s.slice(i);
+    if(_saMotion.samples.length < _saMotion.MIN_SAMPLES) return;
+
+    // Tính mean
+    var n = _saMotion.samples.length;
+    var sum = 0;
+    for(var j = 0; j < n; j++) sum += _saMotion.samples[j].mag;
+    var mean = sum / n;
+
+    // Quyết định đang di chuyển hay không
+    var moving = false;
+    if(!useGrav){
+      // acceleration (no gravity): đứng yên ≈ 0, đi bộ ≈ 1-2 m/s²
+      moving = mean > _saMotion.THRESHOLD_LIN;
+    } else {
+      // accelerationIncludingGravity: đứng yên variance thấp, đi bộ variance cao
+      var vSum = 0;
+      for(var k = 0; k < n; k++){
+        var d = _saMotion.samples[k].mag - mean;
+        vSum += d * d;
+      }
+      moving = (vSum / n) > _saMotion.THRESHOLD_VAR;
+    }
+
+    if(moving && (now - _saMotion.lastTriggerAt) > _saMotion.COOLDOWN_MS){
+      _saMotion.lastTriggerAt = now;
+      _saMotion.samples = [];
+      saLog('MOTION_DETECTED', (useGrav ? 'var=' : 'mean=') + mean.toFixed(2));
+      // Chỉ trigger GPS khi đang WORKING — tránh gọi lúc state không phù hợp
+      if(_sa.state === STATE.WORKING && typeof saGpsPoll === 'function') saGpsPoll();
+    }
+  };
+
+  window.addEventListener('devicemotion', _saMotion.handler, {passive: true});
+  _saMotion.active = true;
+  saLog('MOTION_ON', 'DeviceMotion listener installed');
+}
+
+function saMotionStart(){
+  if(_saMotion.active) return;
+  if(!window.DeviceMotionEvent) return;
+
+  // iOS 13+ yêu cầu xin quyền — Android không cần
+  if(typeof DeviceMotionEvent.requestPermission === 'function'){
+    DeviceMotionEvent.requestPermission().then(function(perm){
+      if(perm === 'granted') _saMotionInstall();
+    }).catch(function(){});
+    return;
+  }
+  _saMotionInstall();
+}
+
+function saMotionStop(){
+  if(!_saMotion.active || !_saMotion.handler) return;
+  window.removeEventListener('devicemotion', _saMotion.handler);
+  _saMotion.handler = null;
+  _saMotion.active = false;
+  _saMotion.samples = [];
+  saLog('MOTION_OFF', 'DeviceMotion listener removed');
+}
+
+window.saMotionStart = saMotionStart;
+window.saMotionStop  = saMotionStop;
 
 // Init khi DOM sẵn sàng
 if(document.readyState === 'loading'){
