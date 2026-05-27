@@ -199,6 +199,9 @@ function _add(type, tag, msg, detail){
     _newCount++;
     _updateBadge();
   }
+  if(type === 'SA' || type === 'NATIVE'){
+    _updateMotionDot();
+  }
   if(_panelOpen) _queueEntry(entry);
   _schedulePersist();
 }
@@ -851,6 +854,31 @@ function _updateStatus(){
       parts.push('<b>SA:</b> ' + _esc(_sa.state || '?'));
       parts.push(_sa.enabled ? '<span style="color:#0D9E75">ON</span>' : '<span style="color:#9CA3AF">OFF</span>');
       parts.push('GPS:' + (_sa.gpsActive ? '<span style="color:#0D9E75">UP</span>' : '<span style="color:#9CA3AF">DOWN</span>'));
+
+      // Motion status
+      if(_sa.nativeBrainFull){
+        parts.push('<b>🧠</b><span style="color:#F97316">BRAIN</span>');
+      } else if(window._saMotion && _saMotion.active){
+        parts.push('<b>📳</b><span style="color:#14B8A6">JS-MOT</span>');
+      } else {
+        parts.push('<span style="color:#9CA3AF">MOT:OFF</span>');
+      }
+
+      // Last motion event từ native (nếu có trong localStorage)
+      try{
+        var motStatus = null;
+        var saRaw = localStorage.getItem('cp22_smart_att');
+        if(saRaw){
+          var saObj = JSON.parse(saRaw);
+          if(saObj && saObj.motionStatus) motStatus = saObj.motionStatus;
+        }
+        if(!motStatus && window._sa && _sa.signals && _sa.signals.motionStatus) motStatus = _sa.signals.motionStatus;
+        if(motStatus){
+          var motColor = motStatus === 'MOVING' ? '#0D9E75' : motStatus === 'STILL' ? '#9CA3AF' : '#F5A623';
+          var motIcon  = motStatus === 'MOVING' ? '🚶' : motStatus === 'STILL' ? '🧍' : '❓';
+          parts.push(motIcon + '<span style="color:' + motColor + '">' + _esc(motStatus) + '</span>');
+        }
+      }catch(e){}
     }
     if(window._gpsData){
       parts.push('<b>GEO:</b> ' + (_gpsData.enabled ? '<span style="color:#0D9E75">ON</span>' : '<span style="color:#9CA3AF">OFF</span>'));
@@ -874,6 +902,39 @@ function _updateBadge(){
   }
 }
 
+function _updateMotionDot(){
+  var dot = document.getElementById('dbgMotionDot');
+  if(!dot) return;
+  try{
+    var isMoving = false;
+    var isBrain  = !!(window._sa && _sa.nativeBrainFull);
+    var isJsMot  = !!(window._saMotion && _saMotion.active);
+
+    // Đọc motion status từ SA signals hoặc localStorage
+    var motStatus = '';
+    if(window._sa && _sa.signals && _sa.signals.motionStatus) motStatus = _sa.signals.motionStatus;
+    if(!motStatus){
+      try{
+        var raw = localStorage.getItem('cp22_smart_att');
+        if(raw){ var o = JSON.parse(raw); if(o && o.motionStatus) motStatus = o.motionStatus; }
+      }catch(e){}
+    }
+    isMoving = motStatus === 'MOVING';
+
+    if(isMoving){
+      dot.style.display    = 'block';
+      dot.style.background = '#0D9E75';  // xanh = đang đi
+      dot.title = 'Motion: MOVING';
+    } else if(isBrain || isJsMot){
+      dot.style.display    = 'block';
+      dot.style.background = '#9CA3AF';  // xám = listener active nhưng đứng yên
+      dot.title = isBrain ? 'Brain: STILL' : 'JS Motion: STILL';
+    } else {
+      dot.style.display = 'none';
+    }
+  }catch(e){}
+}
+
 window.dbgOpen = function(){
   _newCount = 0;
   _updateBadge();
@@ -889,9 +950,11 @@ window.dbgOpen = function(){
     traceBtn.style.background = FULL_TRACE ? '#DCFCE7' : '#F3F4F6';
     traceBtn.style.color = FULL_TRACE ? '#166534' : '#374151';
   }
+  _updateMotionDot();
   clearInterval(window._dbgStatusTimer);
   window._dbgStatusTimer = setInterval(function(){
     if(_panelOpen) _updateStatus();
+    _updateMotionDot();
     else clearInterval(window._dbgStatusTimer);
   }, 2000);
 };
