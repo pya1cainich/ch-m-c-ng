@@ -1226,12 +1226,15 @@ function renderOB(){
       <!-- ═══ ĐIỀU CHỈNH GIỜ TÙY CHỈNH ═══ -->
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;background:#F0F6FF;border-radius:12px;border:1.5px dashed #2D7DD2">
         <span style="font-size:12px;font-weight:700;color:#1F4F8F;white-space:nowrap">⚙️ ${t.obHoursCustom||'Hoặc nhập:'}</span>
-        <input id="ob3HoursCustom" type="number" min="1" max="24" step="0.5" value="${setupHours}" 
-          oninput="selHoursCustom(this.value)" 
+        <input id="ob3HoursCustom" type="number" min="1" max="24" step="0.5" value="${setupHours}"
+          oninput="selHoursCustom(this.value)"
           style="flex:1;border:1.5px solid #C7DBF8;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:700;color:#1F4F8F;background:white;outline:none;font-family:'Nunito',sans-serif;text-align:center">
         <span style="font-size:12px;font-weight:700;color:#1F4F8F">${t.obHoursUnit||'giờ/ca'}</span>
       </div>
+      <div class="field-label">${{vi:'Ngày làm trong tuần',en:'Working days',ko:'근무 요일',ja:'出勤曜日',zh:'工作日',my:'အလုပ်ရက်',th:'วันทำงาน',id:'Hari kerja',ph:'Araw ng trabaho',ne:'काम गर्ने दिन',hi:'काम के दिन'}[obLang]||'Ngày làm trong tuần'}</div>
+      <div id="obWorkDayPicker" style="margin-bottom:4px"></div>
     `;
+    renderWorkDayPicker('obWorkDayPicker', userData.workDays || [0,1,2,3,4], obLang);
     if(nextBtn)nextBtn.textContent=(t.obNext||'Tiếp theo →');
   }else if(obPage===4){
     const shifts=setupShifts;
@@ -1360,6 +1363,8 @@ function obNext(){
     else userData.subJob.salary=_obSubSalVal;
   }else if(obPage===3){
     userData.shifts=setupShifts;userData.hoursPerShift=setupHours;
+    // workDays đã được cập nhật trực tiếp bởi toggleWorkDay()
+    if(!userData.workDays || userData.workDays.length===0) userData.workDays=[0,1,2,3,4];
   }else if(obPage===4){
     // Lưu cài đặt nghỉ giữa giờ từ bước 4
     userData.hasBreak     = (typeof _obBreak !== 'undefined') ? _obBreak === 1 : false;
@@ -1404,6 +1409,46 @@ function skipOB(){
   userData.name=u('user.default_name');userData.job=u('user.default_job');
   saveUser();goScreen('screenHome');initHome();
 }
+
+// ── WORK DAY PICKER ─────────────────────────────────────────────────
+const _WD_LABELS = {
+  vi:['T2','T3','T4','T5','T6','T7','CN'],
+  en:['Mo','Tu','We','Th','Fr','Sa','Su'],
+  ko:['월','화','수','목','금','토','일'],
+  ja:['月','火','水','木','金','土','日'],
+  zh:['一','二','三','四','五','六','日'],
+  my:['တ','အ','ဗ','ကြ','သ','စ','တ'],
+  th:['จ','อ','พ','พฤ','ศ','ส','อา'],
+  id:['Sn','Sl','Rb','Km','Jm','Sb','Mg'],
+  ph:['Lu','Ma','Mi','Hu','Bi','Sa','Li'],
+  ne:['सो','मं','बु','बि','शु','श','आ'],
+  hi:['सो','मं','बु','गु','शु','श','र']
+};
+function _wdLabels(){ return _WD_LABELS[userData.lang||'vi']||_WD_LABELS.vi; }
+function _wdLabelsOb(lang){ return _WD_LABELS[lang||'vi']||_WD_LABELS.vi; }
+
+function renderWorkDayPicker(containerId, days, lang){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  const labels = lang ? _wdLabelsOb(lang) : _wdLabels();
+  const sel = days || userData.workDays || [0,1,2,3,4];
+  el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px">'
+    + labels.map((lb,i) =>
+        `<div class="num-btn${sel.includes(i)?' sel':''}" style="padding:8px 2px;font-size:13px"
+          onclick="toggleWorkDay(${i},this,'${containerId}')">${lb}</div>`
+      ).join('')
+    + '</div>';
+}
+
+function toggleWorkDay(idx, el, containerId){
+  if(!userData.workDays) userData.workDays = [0,1,2,3,4];
+  const i = userData.workDays.indexOf(idx);
+  if(i === -1) userData.workDays.push(idx);
+  else userData.workDays.splice(i,1);
+  userData.workDays.sort((a,b)=>a-b);
+  el.classList.toggle('sel');
+}
+// ────────────────────────────────────────────────────────────────────
 
 /** Chọn số ca (1-4) */
 /** Chọn số ca (1-4) — đồng thời hiện/ẩn ô "Tuần này làm ca nào" trong Setup */
@@ -2194,6 +2239,8 @@ function openPanel(id){
       }[L] || '⏰ Giờ vào & hết ca';
       lblShiftTimes.textContent = shiftTimesLbl;
     }
+    // Render work day picker
+    renderWorkDayPicker('setupWorkDayPicker', userData.workDays || [0,1,2,3,4]);
     // Đồng bộ nút Số tuần một vòng
     setupWeeks = userData.weeksPerCycle || 1;
     document.querySelectorAll('#setupWeeksGrid .num-btn').forEach((b,i)=>{
@@ -2455,6 +2502,7 @@ function saveSetup(){
   userData.shifts = setupShifts || userData.shifts || 1;
   userData.hoursPerShift = setupHours || userData.hoursPerShift || 8;
   userData.currentShift = Math.min(setupCurShift || userData.currentShift || 1, userData.shifts);
+  if(!userData.workDays || userData.workDays.length===0) userData.workDays=[0,1,2,3,4];
   // ═══ Lưu shift times từ panel Setup ═══
   if(typeof onSetupShiftTimeChange === 'function') onSetupShiftTimeChange();
   if(typeof saveSubJob==='function') saveSubJob(); // TRƯỚC saveUser!
