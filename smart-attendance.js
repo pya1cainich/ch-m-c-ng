@@ -3487,9 +3487,11 @@ var _saMotion = {
   active:        false,
   handler:       null,
   lastTriggerAt: 0,
+  lastProcessAt: 0,
   samples:       [],
+  THROTTLE_MS:   200,    // chỉ xử lý 1 lần mỗi 200ms (5Hz) — giảm 12× CPU so với 60Hz raw
   WINDOW_MS:     2000,   // cửa sổ trượt 2 giây
-  MIN_SAMPLES:   15,     // cần ít nhất 15 mẫu (~0.25s ở 60Hz) mới tính
+  MIN_SAMPLES:   8,      // ít nhất 8 mẫu (ở 5Hz = 1.6s) mới tính
   THRESHOLD_LIN: 1.2,    // m/s² mean khi dùng acceleration (không gravity) → đang đi
   THRESHOLD_VAR: 1.8,    // variance magnitude khi dùng accelerationIncludingGravity
   COOLDOWN_MS:   30000   // 30s giữa 2 lần trigger GPS
@@ -3497,7 +3499,11 @@ var _saMotion = {
 
 function _saMotionInstall(){
   _saMotion.handler = function(e){
+    // Throttle: bỏ qua event nếu chưa đủ 200ms từ lần xử lý trước
     var now = Date.now();
+    if(now - _saMotion.lastProcessAt < _saMotion.THROTTLE_MS) return;
+    _saMotion.lastProcessAt = now;
+
     var mag = 0;
     var useGrav = false;
 
@@ -3530,10 +3536,8 @@ function _saMotionInstall(){
     // Quyết định đang di chuyển hay không
     var moving = false;
     if(!useGrav){
-      // acceleration (no gravity): đứng yên ≈ 0, đi bộ ≈ 1-2 m/s²
       moving = mean > _saMotion.THRESHOLD_LIN;
     } else {
-      // accelerationIncludingGravity: đứng yên variance thấp, đi bộ variance cao
       var vSum = 0;
       for(var k = 0; k < n; k++){
         var d = _saMotion.samples[k].mag - mean;
@@ -3546,14 +3550,13 @@ function _saMotionInstall(){
       _saMotion.lastTriggerAt = now;
       _saMotion.samples = [];
       saLog('MOTION_DETECTED', (useGrav ? 'var=' : 'mean=') + mean.toFixed(2));
-      // Chỉ trigger GPS khi đang WORKING — tránh gọi lúc state không phù hợp
       if(_sa.state === STATE.WORKING && typeof saGpsPoll === 'function') saGpsPoll();
     }
   };
 
   window.addEventListener('devicemotion', _saMotion.handler, {passive: true});
   _saMotion.active = true;
-  saLog('MOTION_ON', 'DeviceMotion listener installed');
+  saLog('MOTION_ON', 'DeviceMotion listener installed (5Hz throttle)');
 }
 
 function saMotionStart(){
