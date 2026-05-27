@@ -187,34 +187,64 @@ public class AttendanceBrain {
 
         SharedPreferences p = AttendanceState.prefs(ctx);
         long windowStart = p.getLong(AttendanceState.KEY_CHECKIN_WINDOW_START, 0);
-        long signalOnMs  = p.getLong(AttendanceState.KEY_CHECKIN_SIGNAL_ON_MS, 0);
         long now         = System.currentTimeMillis();
         long checkinMs   = AttendanceState.checkinMs(ctx);
 
         SignalResult sig = checkWorkSignal(ctx);
 
         if (sig.hasSignal) {
-            // Tích lũy thời gian có tín hiệu
-            long elapsed = (windowStart > 0) ? (now - windowStart) : 0;
-            long newSignalOnMs = signalOnMs + Math.min(elapsed, 60_000L);
-            AttendanceState.prefs(ctx).edit()
-                .putLong(AttendanceState.KEY_CHECKIN_SIGNAL_ON_MS, newSignalOnMs)
-                .putLong(AttendanceState.KEY_CHECKIN_WINDOW_START, now)
-                .apply();
+            // ── Chiến lược theo loại tín hiệu ────────────────────────────────
+            // WiFi: rẻ pin, đáng tin — dùng wall-clock từ lúc phát hiện WiFi.
+            //   Alarm thưa cũng không ảnh hưởng vì chỉ so sánh thời điểm.
+            // GPS: kém ổn định hơn — dùng tích lũy các lần poll (45s/lần).
+            //   Tránh check-in giả khi GPS bị lệch 1 lần rồi vào lại vùng.
 
-            Log.d(TAG, "CHECKIN_WINDOW signal_on=" + newSignalOnMs/1000 + "s / need=" + checkinMs/1000 + "s");
+            if (sig.source.startsWith("wifi")) {
+                // WiFi: wall-clock — nếu WiFi công ty có mặt đủ checkinMs → check-in
+                long elapsed = (windowStart > 0) ? (now - windowStart) : 0;
+                Log.d(TAG, "CHECKIN_WINDOW [wifi] elapsed=" + elapsed/1000 + "s / need=" + checkinMs/1000 + "s");
+                if (elapsed >= checkinMs) {
+                    return doCheckIn(ctx, sig.source);
+                }
+                // Chưa đủ — cập nhật last-seen để đếm liên tục
+                // (windowStart chỉ reset khi mất tín hiệu)
 
-            if (newSignalOnMs >= checkinMs) {
-                // Đủ điều kiện check-in!
-                return doCheckIn(ctx, sig.source);
+            } else {
+                // GPS: tích lũy — cộng khoảng cách giữa các lần poll, giới hạn 90s/lần
+                // để tránh cộng quá nhiều khi evaluate hiếm
+                long signalOnMs = p.getLong(AttendanceState.KEY_CHECKIN_SIGNAL_ON_MS, 0);
+                long elapsed    = (windowStart > 0) ? (now - windowStart) : 0;
+                long delta      = Math.min(elapsed, 90_000L);
+                long newOnMs    = signalOnMs + delta;
+
+                AttendanceState.prefs(ctx).edit()
+                    .putLong(AttendanceState.KEY_CHECKIN_SIGNAL_ON_MS, newOnMs)
+                    .putLong(AttendanceState.KEY_CHECKIN_WINDOW_START, now)
+                    .apply();
+
+                Log.d(TAG, "CHECKIN_WINDOW [gps] signal_on=" + newOnMs/1000 + "s / need=" + checkinMs/1000 + "s");
+
+                if (newOnMs >= checkinMs) {
+                    return doCheckIn(ctx, sig.source);
+                }
             }
 
         } else {
-            // Mất tín hiệu — kiểm tra có bị mất quá lâu không
+            // Mất tín hiệu hoàn toàn
             long totalElapsed = (windowStart > 0) ? (now - windowStart) : 0;
 
+            // Reset GPS accumulation khi mất tín hiệu
+            // (để tránh tích lũy từ các phiên WiFi/GPS khác nhau)
+            if (p.getLong(AttendanceState.KEY_CHECKIN_SIGNAL_ON_MS, 0) > 0) {
+                AttendanceState.prefs(ctx).edit()
+                    .putLong(AttendanceState.KEY_CHECKIN_SIGNAL_ON_MS, 0)
+                    .putLong(AttendanceState.KEY_CHECKIN_WINDOW_START, now)
+                    .apply();
+                Log.d(TAG, "CHECKIN_WINDOW signal lost — reset accumulator");
+            }
+
+            // Hủy cửa sổ nếu mất tín hiệu quá lâu (checkinMs * 3)
             if (totalElapsed > checkinMs * 3) {
-                // Mất quá lâu → hủy cửa sổ check-in
                 Log.d(TAG, "CHECKIN_WINDOW timed out — reset to OUTSIDE");
                 resetCheckinWindow(ctx);
                 r.newState = AttendanceState.OUTSIDE;

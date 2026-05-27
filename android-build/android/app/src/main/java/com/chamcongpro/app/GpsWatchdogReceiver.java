@@ -14,11 +14,13 @@ import android.os.Build;
  * thường xuyên để đảm bảo service được khởi động lại nếu đã chết.
  *
  * Các intent được dùng:
- *   - SCREEN_ON/OFF   → user dùng điện thoại → kiểm tra service
- *   - CONNECTIVITY_CHANGE → mạng thay đổi → kiểm tra service
- *   - USER_PRESENT     → user mở khoá → kiểm tra service
+ *   - SCREEN_ON/OFF        → user dùng điện thoại → kiểm tra service
+ *   - CONNECTIVITY_CHANGE  → mạng thay đổi → kiểm tra service + trigger Brain v2
+ *   - USER_PRESENT         → user mở khoá → kiểm tra service
  *
- * Không dùng BATTERY_CHANGED (quá thường xuyên) hay TIME_TICK (cần dynamic).
+ * Brain v2: khi CONNECTIVITY_CHANGE (WiFi kết nối/ngắt), nếu Brain v2 đang
+ * enabled thì trigger AttendanceBrain.evaluate() ngay — không đợi alarm.
+ * Đây là "WiFi change trigger" quan trọng nhất của kiến trúc xương cá.
  */
 public class GpsWatchdogReceiver extends BroadcastReceiver {
 
@@ -26,22 +28,45 @@ public class GpsWatchdogReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         if (intent == null || intent.getAction() == null) return;
 
-        SharedPreferences prefs = context.getSharedPreferences(
+        final Context ctx = context.getApplicationContext();
+        final String action = intent.getAction();
+
+        // ── Brain v2: WiFi change trigger ────────────────────────────────────
+        // Khi mạng thay đổi (WiFi connect/disconnect), đánh thức Brain ngay.
+        // Đây là sự kiện quan trọng nhất: user vào CT kết nối WiFi cần check-in,
+        // hoặc rời CT WiFi mất cần chuyển MAYBE_LEFT_WORK.
+        if ("android.net.conn.CONNECTIVITY_CHANGE".equals(action)) {
+            if (AttendanceState.isEnabled(ctx)) {
+                final PendingResult pendingResult = goAsync();
+                new Thread(() -> {
+                    try {
+                        android.util.Log.d("GpsWatchdog",
+                            "[Brain] WiFi/network changed → evaluate()");
+                        AttendanceBrain.get().evaluate(ctx, "wifi_change");
+                    } finally {
+                        pendingResult.finish();
+                    }
+                }, "Brain-wifi-change").start();
+                // Vẫn tiếp tục xuống để kiểm tra NativeGpsService watchdog
+            }
+        }
+
+        // ── Watchdog NativeGpsService (logic cũ giữ nguyên) ─────────────────
+        SharedPreferences prefs = ctx.getSharedPreferences(
             NativeGpsService.GPS_PREFS, Context.MODE_PRIVATE);
         boolean enabled = prefs.getBoolean("enabled", false);
-        if (!enabled) return; // GPS không bật → không cần restart
+        if (!enabled) return;
 
-        // Kiểm tra service có đang chạy không
-        if (isServiceRunning(context)) return; // đang chạy → không cần làm gì
+        if (isServiceRunning(ctx)) return;
 
         android.util.Log.d("GpsWatchdog",
-            "Service not running, action=" + intent.getAction() + " — restarting");
+            "Service not running, action=" + action + " — restarting");
         try {
-            Intent svcIntent = new Intent(context, NativeGpsService.class);
+            Intent svcIntent = new Intent(ctx, NativeGpsService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(svcIntent);
+                ctx.startForegroundService(svcIntent);
             } else {
-                context.startService(svcIntent);
+                ctx.startService(svcIntent);
             }
         } catch (Exception e) {
             android.util.Log.e("GpsWatchdog", "Restart failed: " + e.getMessage());

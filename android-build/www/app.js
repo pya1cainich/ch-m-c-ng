@@ -3025,15 +3025,9 @@ function saveDayPanel() {
     }
   }
   saveAtt();
-  if((manualMainOutSaved || manualSubOutSaved) && typeof window.gpsOnManualCheckoutSaved === 'function'){
-    try{
-      window.gpsOnManualCheckoutSaved({
-        dateKey: _dayKey,
-        mainOut: manualMainOutSaved,
-        subOut: manualSubOutSaved
-      });
-    }catch(e){}
-  }
+  // FIX #6: attendanceSetOut() đã gọi gpsOnManualCheckoutSaved() rồi.
+  // saveDayPanel() không gọi lại để tránh xử lý lặp (hủy reminder / lưu state native).
+  // if((manualMainOutSaved || manualSubOutSaved) && ...) { ... } — đã bỏ
   closeDayPanel();
   renderCalBig();
   renderHomeStats();

@@ -56,6 +56,52 @@ public class NativeGpsService extends Service {
     private static final String ACTION_SMART_CHECKIN   = "com.chamcongpro.app.SMART_CHECKIN";
     private static final String ACTION_SMART_CHECKOUT  = "com.chamcongpro.app.SMART_CHECKOUT";
     private static final String ACTION_SMART_WAKEUP    = "com.chamcongpro.app.SMART_WAKEUP";
+
+    // ─── Brain v2 GPS control ─────────────────────────────────────────────────
+    /** Action để Brain v2 điều khiển GPS service từ xa */
+    static final String ACTION_BRAIN_GPS_CONTROL = "com.chamcongpro.app.BRAIN_GPS_CONTROL";
+    static final String EXTRA_BRAIN_CMD          = "brain_cmd";     // "oneshot"|"stop"|"set_interval"
+    static final String EXTRA_BRAIN_INTERVAL_MS  = "brain_interval_ms";
+
+    // ─── Static helpers cho Brain v2 (gọi từ AttendanceBrain.java) ───────────
+
+    /** Yêu cầu lấy 1 GPS fix ngắn hạn rồi dừng */
+    public static void requestOneShot(Context ctx) {
+        sendBrainCmd(ctx, "oneshot", 0);
+    }
+
+    /** Dừng GPS polling (tiết kiệm pin) */
+    public static void stop(Context ctx) {
+        sendBrainCmd(ctx, "stop", 0);
+    }
+
+    /** Đặt lại interval GPS polling */
+    public static void setInterval(Context ctx, long intervalMs) {
+        sendBrainCmd(ctx, "set_interval", intervalMs);
+    }
+
+    private static void sendBrainCmd(Context ctx, String cmd, long intervalMs) {
+        try {
+            Intent intent = new Intent(ctx, NativeGpsService.class);
+            intent.setAction(ACTION_BRAIN_GPS_CONTROL);
+            intent.putExtra(EXTRA_BRAIN_CMD, cmd);
+            if (intervalMs > 0) intent.putExtra(EXTRA_BRAIN_INTERVAL_MS, intervalMs);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                ctx.startForegroundService(intent);
+            } else {
+                ctx.startService(intent);
+            }
+        } catch (Exception e) {
+            android.util.Log.w("NativeGps", "sendBrainCmd failed: " + e.getMessage());
+        }
+    }
+
+    /** Kiểm tra Brain v2 có đang enabled không (để guard logic cũ) */
+    static boolean isBrainV2Enabled(Context ctx) {
+        return ctx.getSharedPreferences(
+            AttendanceState.PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(AttendanceState.KEY_ENABLED, false);
+    }
     private static final String ACTION_INSIDE_SCHEDULE_CHECKOUT = "com.chamcongpro.app.INSIDE_SCHEDULE_CHECKOUT";
     private static final int    REQ_RESTART            = 9901;
     private static final int    REQ_AUTO_CHECKIN       = 9911;
@@ -178,21 +224,33 @@ public class NativeGpsService extends Service {
         } else {
             startForeground(NOTIF_ID, buildNotif(NotifTranslations.tr(this, "ongoingTracking")));
         }
+        // ── Brain v2 GPS control (ưu tiên xử lý trước) ─────────────────────
+        if (ACTION_BRAIN_GPS_CONTROL.equals(action)) {
+            handleBrainGpsControl(intent);
+            configureTrackingFromPrefs();
+            return START_STICKY;
+        }
+
+        // ── Logic cũ — chỉ chạy nếu Brain v2 KHÔNG được bật ────────────────
+        // Khi Brain v2 enabled, nó tự quản lý toàn bộ vòng đời GPS + attendance.
+        // NativeGpsService chỉ còn nhiệm vụ: chạy GPS foreground, báo cáo vị trí.
+        boolean brainV2 = isBrainV2Enabled(this);
+
         if (ACTION_AUTO_CHECKIN.equals(action)) {
             cancelCheckinTimerOnly();
-            doAutoCheckin();
+            if (!brainV2) doAutoCheckin();
         } else if (ACTION_AUTO_CHECKOUT.equals(action)) {
             cancelCheckoutTimerOnly();
-            doAutoCheckout();
+            if (!brainV2) doAutoCheckout();
         } else if (ACTION_SMART_CHECKIN.equals(action)) {
             cancelSmartCheckinTimerOnly();
-            doSmartAutoCheckin();
+            if (!brainV2) doSmartAutoCheckin();
         } else if (ACTION_SMART_CHECKOUT.equals(action)) {
             cancelSmartCheckoutTimerOnly();
-            doSmartAutoCheckout();
+            if (!brainV2) doSmartAutoCheckout();
         } else if (ACTION_SMART_WAKEUP.equals(action)) {
             cancelSmartWakeupTimerOnly();
-            wakeSmartCycleForGps();
+            if (!brainV2) wakeSmartCycleForGps();
         } else if (ACTION_INSIDE_SCHEDULE_CHECKOUT.equals(action)) {
             cancelInsideScheduleCheckout();
             android.util.Log.d("NativeGps", "inside schedule checkout disabled; alarm canceled");
@@ -338,6 +396,50 @@ public class NativeGpsService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  BRAIN V2 GPS CONTROL — xử lý lệnh từ AttendanceBrain
+    // ══════════════════════════════════════════════════════════════════════════
+
+    private void handleBrainGpsControl(Intent intent) {
+        if (intent == null) return;
+        String cmd = intent.getStringExtra(EXTRA_BRAIN_CMD);
+        if (cmd == null) return;
+
+        android.util.Log.d("NativeGps", "[Brain] GPS cmd=" + cmd);
+
+        switch (cmd) {
+            case "oneshot":
+                // Lấy 1 GPS fix rồi dừng — không cần foreground notification dài
+                startForeground(NOTIF_ID,
+                    buildNotif(NotifTranslations.tr(this, "ongoingTracking")));
+                startLocationUpdates();
+                // Tự dừng sau 30s nếu không lấy được GPS
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    stopLocationUpdates();
+                    stopForeground(true);
+                }, 30_000L);
+                break;
+
+            case "stop":
+                stopLocationUpdates();
+                stopForeground(true);
+                break;
+
+            case "set_interval":
+                long ms = intent.getLongExtra(EXTRA_BRAIN_INTERVAL_MS, 60_000L);
+                // Lưu interval mới vào prefs để configureTrackingFromPrefs() dùng
+                getSharedPreferences(GPS_PREFS, MODE_PRIVATE).edit()
+                    .putLong("brain_interval_ms", ms)
+                    .apply();
+                startForeground(NOTIF_ID,
+                    buildNotif(NotifTranslations.tr(this, "ongoingTracking")));
+                // Restart location updates với interval mới
+                stopLocationUpdates();
+                startLocationUpdates();
+                break;
+        }
+    }
 
     private boolean hasLocationPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;

@@ -2300,12 +2300,14 @@ function gpsReminderPlanForOpenShift(info, nowMs){
   // monthEnd: outTime + 15 phút ngày cuối tháng
   var tMonthEnd = gpsEndOfMonthTsAt(openTs, outTime, 15);
 
-  // Nếu tất cả đã qua, dùng now + 2 phút (để notification thực sự fire được)
-  var catchUp = now + 2 * 60 * 1000;
+  // FIX #7: Nếu các mốc đã qua, stagger các catch-up notification cách nhau 90 giây
+  // để tránh spam 3 thông báo cùng lúc.
+  // n20 bắn trước, weekend sau 90s, monthEnd sau 180s.
+  var catchUpBase = now + 2 * 60 * 1000;
   return {
-    n20:      t20      > minFuture ? t20      : catchUp,
-    weekend:  tWeekend > minFuture ? tWeekend : catchUp,
-    monthEnd: tMonthEnd > minFuture ? tMonthEnd : catchUp
+    n20:      t20      > minFuture ? t20      : catchUpBase,
+    weekend:  tWeekend > minFuture ? tWeekend : catchUpBase + 90 * 1000,
+    monthEnd: tMonthEnd > minFuture ? tMonthEnd : catchUpBase + 180 * 1000
   };
 }
 
