@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Demo Redesign — Chấm Công Pro</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+* { box-sizing:border-box; margin:0; padding:0 }
+body { font-family:'Nunito',sans-serif; background:#0A1628; min-height:100dvh; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; padding:0 }
+
+/* ── TOGGLE TABS ── */
+.demo-tabs { display:flex; gap:0; background:#162035; border-bottom:2px solid #1E3050; width:100%; max-width:420px; position:sticky; top:0; z-index:100 }
+.demo-tab { flex:1; padding:12px; text-align:center; font-size:13px; font-weight:800; color:rgba(255,255,255,.4); cursor:pointer; border-bottom:3px solid transparent; transition:.2s }
+.demo-tab.active { color:#F0B429; border-bottom-color:#F0B429 }
+
+/* ── WRAPPER ── */
+.demo-wrap { width:100%; max-width:420px; min-height:calc(100dvh - 48px); display:flex; flex-direction:column }
+
+/* ═══════════════════════════════════════
+   ONBOARDING
+═══════════════════════════════════════ */
+#viewOB { display:flex; flex-direction:column; min-height:calc(100dvh - 48px); background:linear-gradient(160deg,#0A1628 0%,#0D2144 60%,#1A3A6B 100%); position:relative; overflow:hidden }
+#viewOB::before { content:''; position:absolute; inset:0; background:radial-gradient(ellipse at 70% 10%, rgba(255,215,0,.08) 0%, transparent 60%); pointer-events:none }
+
+.ob-header { display:flex; justify-content:space-between; align-items:center; padding:16px 20px 0; position:relative; z-index:1 }
+.ob-logo { font-size:18px; font-weight:900; color:#F0B429; letter-spacing:-.5px }
+.ob-skip { font-size:13px; color:rgba(255,255,255,.4); cursor:pointer; padding:4px 8px }
+
+/* Step counter — mới */
+.ob-step-bar { padding:14px 20px 0; position:relative; z-index:1 }
+.ob-step-track { display:flex; align-items:center; gap:6px }
+.ob-step-seg { height:4px; border-radius:2px; flex:1; background:rgba(255,255,255,.15); transition:.3s }
+.ob-step-seg.done { background:#F0B429 }
+.ob-step-seg.active { background:rgba(240,180,41,.6) }
+.ob-step-lbl { font-size:11px; color:rgba(255,255,255,.45); margin-top:6px; font-weight:700 }
+
+.ob-body { flex:1; padding:20px; overflow-y:auto; position:relative; z-index:1 }
+.ob-title { font-size:26px; font-weight:900; color:white; line-height:1.2; margin-bottom:6px }
+.ob-icon { font-size:36px; margin-bottom:8px; display:block }
+.ob-sub { font-size:14px; color:rgba(255,255,255,.6); line-height:1.6; margin-bottom:20px }
+
+/* Question card */
+.q-card { background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:16px; margin-bottom:12px }
+.q-card-title { font-size:12px; font-weight:800; color:rgba(255,255,255,.5); text-transform:uppercase; letter-spacing:.06em; margin-bottom:10px }
+
+/* Field */
+.ob-field { background:rgba(255,255,255,.08); border:1.5px solid rgba(255,255,255,.12); border-radius:12px; padding:12px 14px; font-size:15px; font-weight:700; color:white; width:100%; outline:none; font-family:'Nunito',sans-serif; margin-bottom:10px }
+.ob-field::placeholder { color:rgba(255,255,255,.3) }
+.ob-field:focus { border-color:rgba(240,180,41,.5); background:rgba(255,255,255,.1) }
+.ob-field-lbl { font-size:12px; font-weight:700; color:rgba(255,255,255,.5); margin-bottom:5px }
+
+/* Num buttons */
+.ob-num-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:4px }
+.ob-num-btn { padding:12px 4px; border-radius:12px; border:1.5px solid rgba(255,255,255,.15); background:rgba(255,255,255,.05); color:rgba(255,255,255,.7); font-size:14px; font-weight:800; cursor:pointer; text-align:center; transition:.15s; font-family:'Nunito',sans-serif }
+.ob-num-btn.sel { background:#F0B429; border-color:#F0B429; color:#0A1628 }
+.ob-num-btn:active { transform:scale(.95) }
+
+/* Day picker */
+.ob-day-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:5px }
+.ob-day-btn { padding:10px 2px; border-radius:10px; border:1.5px solid rgba(255,255,255,.15); background:rgba(255,255,255,.05); color:rgba(255,255,255,.5); font-size:12px; font-weight:800; cursor:pointer; text-align:center; transition:.15s; font-family:'Nunito',sans-serif }
+.ob-day-btn.sel { background:#0D9E75; border-color:#0D9E75; color:white }
+.ob-day-btn:active { transform:scale(.92) }
+
+/* Time input */
+.ob-time-row { display:flex; align-items:center; gap:10px; margin-bottom:10px }
+.ob-time-inp { flex:1; background:rgba(255,255,255,.08); border:1.5px solid rgba(255,255,255,.12); border-radius:12px; padding:10px; font-size:18px; font-weight:800; color:white; outline:none; text-align:center; font-family:'Nunito',sans-serif }
+.ob-time-sep { font-size:18px; color:rgba(255,255,255,.3) }
+
+/* Yes/No */
+.ob-yn-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px }
+.ob-yn-btn { padding:12px; border-radius:12px; border:1.5px solid rgba(255,255,255,.15); background:rgba(255,255,255,.05); color:rgba(255,255,255,.7); font-size:14px; font-weight:800; cursor:pointer; text-align:center; transition:.15s; font-family:'Nunito',sans-serif }
+.ob-yn-btn.sel { background:rgba(13,158,117,.25); border-color:#0D9E75; color:#0D9E75 }
+
+/* Summary card — trang cuối */
+.ob-summary { background:linear-gradient(135deg,rgba(13,158,117,.15),rgba(240,180,41,.1)); border:1.5px solid rgba(13,158,117,.3); border-radius:16px; padding:16px; margin-bottom:16px }
+.ob-summary-title { font-size:12px; font-weight:800; color:#0D9E75; margin-bottom:10px; text-transform:uppercase; letter-spacing:.06em }
+.ob-sum-row { display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,.06) }
+.ob-sum-row:last-child { border-bottom:none }
+.ob-sum-icon { font-size:18px; width:28px; text-align:center }
+.ob-sum-text { font-size:13px; font-weight:700; color:rgba(255,255,255,.85) }
+.ob-sum-val { margin-left:auto; font-size:13px; font-weight:800; color:#F0B429 }
+
+/* Footer */
+.ob-footer { padding:16px 20px; display:flex; gap:10px; position:relative; z-index:1; background:linear-gradient(transparent,rgba(0,0,0,.3)) }
+.ob-btn-back { width:44px; height:44px; border-radius:12px; border:1.5px solid rgba(255,255,255,.15); background:transparent; color:rgba(255,255,255,.6); font-size:18px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0 }
+.ob-btn-next { flex:1; height:44px; border-radius:12px; border:none; background:linear-gradient(135deg,#F0B429,#D4960A); color:#0A1628; font-size:15px; font-weight:900; cursor:pointer; font-family:'Nunito',sans-serif; transition:.15s }
+.ob-btn-next:active { transform:scale(.97) }
+
+/* ═══════════════════════════════════════
+   SETUP PANEL
+═══════════════════════════════════════ */
+#viewSetup { display:none; flex-direction:column; min-height:calc(100dvh - 48px); background:#F4F7F6 }
+
+.setup-header { background:linear-gradient(135deg,#0A1628,#1A3A6B); padding:20px 20px 16px; color:white }
+.setup-header-top { display:flex; align-items:center; gap:12px; margin-bottom:4px }
+.setup-header h2 { font-size:20px; font-weight:900; color:white }
+.setup-header p { font-size:13px; color:rgba(255,255,255,.55); margin-top:4px }
+
+.setup-body { flex:1; padding:16px; overflow-y:auto; padding-bottom:100px }
+
+/* Section card */
+.s-card { background:white; border-radius:20px; margin-bottom:12px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,.06) }
+.s-card-head { display:flex; align-items:center; gap:12px; padding:16px; cursor:pointer; user-select:none }
+.s-card-icon { width:40px; height:40px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:20px; flex-shrink:0 }
+.s-card-info { flex:1 }
+.s-card-title { font-size:14px; font-weight:900; color:#1A2332 }
+.s-card-summary { font-size:12px; color:#7A8FA6; margin-top:2px; font-weight:600 }
+.s-card-chevron { font-size:18px; color:#C0CBD8; transition:transform .25s }
+.s-card.open .s-card-chevron { transform:rotate(90deg) }
+
+.s-card-body { display:none; padding:0 16px 16px; border-top:1px solid #F0F3F6 }
+.s-card.open .s-card-body { display:block }
+
+/* Fields inside card */
+.s-field-lbl { font-size:11px; font-weight:800; color:#7A8FA6; text-transform:uppercase; letter-spacing:.05em; margin:12px 0 6px }
+.s-input { width:100%; background:#F4F7F6; border:1.5px solid #E4EAF0; border-radius:12px; padding:11px 14px; font-size:14px; font-weight:700; color:#1A2332; outline:none; font-family:'Nunito',sans-serif }
+.s-input:focus { border-color:#2D7DD2; background:white }
+
+.s-num-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:7px; margin-bottom:4px }
+.s-num-btn { padding:11px 4px; border-radius:11px; border:1.5px solid #E4EAF0; background:#F4F7F6; color:#4A5568; font-size:13px; font-weight:800; cursor:pointer; text-align:center; transition:.15s; font-family:'Nunito',sans-serif }
+.s-num-btn.sel { background:#1A3A6B; border-color:#1A3A6B; color:white }
+
+.s-day-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:5px }
+.s-day-btn { padding:9px 2px; border-radius:9px; border:1.5px solid #E4EAF0; background:#F4F7F6; color:#4A5568; font-size:11px; font-weight:800; cursor:pointer; text-align:center; transition:.15s; font-family:'Nunito',sans-serif }
+.s-day-btn.sel { background:#0D9E75; border-color:#0D9E75; color:white }
+
+.s-time-row { display:flex; align-items:center; gap:8px }
+.s-time-inp { flex:1; background:#F4F7F6; border:1.5px solid #E4EAF0; border-radius:11px; padding:10px; font-size:16px; font-weight:800; color:#1A2332; outline:none; text-align:center; font-family:'Nunito',sans-serif }
+.s-time-sep { font-size:16px; color:#C0CBD8 }
+
+.s-yn-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px }
+.s-yn-btn { padding:11px; border-radius:11px; border:1.5px solid #E4EAF0; background:#F4F7F6; color:#4A5568; font-size:13px; font-weight:800; cursor:pointer; text-align:center; transition:.15s; font-family:'Nunito',sans-serif }
+.s-yn-btn.sel { background:#EAF5F0; border-color:#0D9E75; color:#0D9E75 }
+
+/* Floating save */
+.setup-save-bar { position:fixed; bottom:0; left:50%; transform:translateX(-50%); width:100%; max-width:420px; padding:12px 16px; background:rgba(244,247,246,.92); backdrop-filter:blur(8px); border-top:1px solid #E4EAF0 }
+.s-save-btn { width:100%; padding:14px; border-radius:14px; border:none; background:linear-gradient(135deg,#0A1628,#1A3A6B); color:white; font-size:15px; font-weight:900; cursor:pointer; font-family:'Nunito',sans-serif }
+.s-save-btn:active { transform:scale(.98) }
+
+/* Label badge */
+.info-badge { display:inline-block; background:#EEF4FF; color:#2D7DD2; font-size:11px; font-weight:800; padding:3px 8px; border-radius:20px; margin-left:6px }
+</style>
+</head>
+<body>
+
+<div class="demo-tabs">
+  <div class="demo-tab active" onclick="showView('OB',this)">📱 Onboarding mới</div>
+  <div class="demo-tab" onclick="showView('Setup',this)">⚙️ Thiết lập mới</div>
+</div>
+
+<div class="demo-wrap">
+
+<!-- ═══════════ ONBOARDING ═══════════ -->
+<div id="viewOB">
+  <div class="ob-header">
+    <div class="ob-logo">⚓ Chấm Công Pro</div>
+    <div class="ob-skip">Bỏ qua</div>
+  </div>
+
+  <div class="ob-step-bar">
+    <div class="ob-step-track" id="stepTrack"></div>
+    <div class="ob-step-lbl" id="stepLbl"></div>
+  </div>
+
+  <div class="ob-body" id="obBody"></div>
+
+  <div class="ob-footer">
+    <button class="ob-btn-back" id="obBack" onclick="obGoBack()">←</button>
+    <button class="ob-btn-next" id="obNext" onclick="obGoNext()">Tiếp theo →</button>
+  </div>
+</div>
+
+<!-- ═══════════ SETUP PANEL ═══════════ -->
+<div id="viewSetup">
+  <div class="setup-header">
+    <div class="setup-header-top">
+      <span style="font-size:28px">📝</span>
+      <div>
+        <h2>Thiết lập</h2>
+        <p>Chỉnh lại thông tin bất cứ lúc nào</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="setup-body">
+
+    <!-- Card 1: Thông tin cá nhân -->
+    <div class="s-card open" id="sCard1">
+      <div class="s-card-head" onclick="toggleCard('sCard1','sum1')">
+        <div class="s-card-icon" style="background:#EEF4FF">👤</div>
+        <div class="s-card-info">
+          <div class="s-card-title">Thông tin cá nhân</div>
+          <div class="s-card-summary" id="sum1">Nguyễn Văn A · Nhân viên</div>
+        </div>
+        <div class="s-card-chevron">›</div>
+      </div>
+      <div class="s-card-body">
+        <div class="s-field-lbl">Họ và tên</div>
+        <input class="s-input" value="Nguyễn Văn A" placeholder="Họ và tên">
+        <div class="s-field-lbl">Chức vụ</div>
+        <input class="s-input" value="Nhân viên" placeholder="Chức vụ / Công việc" style="margin-bottom:8px">
+        <div class="s-field-lbl">Công ty</div>
+        <input class="s-input" value="Công ty ABC" placeholder="Tên công ty">
+      </div>
+    </div>
+
+    <!-- Card 2: Lịch làm việc -->
+    <div class="s-card" id="sCard2">
+      <div class="s-card-head" onclick="toggleCard('sCard2','sum2')">
+        <div class="s-card-icon" style="background:#E0F5EE">📅</div>
+        <div class="s-card-info">
+          <div class="s-card-title">Lịch làm việc</div>
+          <div class="s-card-summary" id="sum2">1 ca · 8h/ca · T2–T6</div>
+        </div>
+        <div class="s-card-chevron">›</div>
+      </div>
+      <div class="s-card-body">
+        <div class="s-field-lbl">Số ca làm việc</div>
+        <div class="s-num-grid">
+          <div class="s-num-btn sel" onclick="sSelBtn(this,'.s-num-grid')">1</div>
+          <div class="s-num-btn" onclick="sSelBtn(this,'.s-num-grid')">2</div>
+          <div class="s-num-btn" onclick="sSelBtn(this,'.s-num-grid')">3</div>
+          <div class="s-num-btn" onclick="sSelBtn(this,'.s-num-grid')">4</div>
+        </div>
+        <div class="s-field-lbl">Số giờ mỗi ca</div>
+        <div class="s-num-grid" style="grid-template-columns:repeat(5,1fr)">
+          <div class="s-num-btn" onclick="sSelBtn(this,null,this.closest('.s-num-grid'))">6h</div>
+          <div class="s-num-btn" onclick="sSelBtn(this,null,this.closest('.s-num-grid'))">7h</div>
+          <div class="s-num-btn sel" onclick="sSelBtn(this,null,this.closest('.s-num-grid'))">8h</div>
+          <div class="s-num-btn" onclick="sSelBtn(this,null,this.closest('.s-num-grid'))">10h</div>
+          <div class="s-num-btn" onclick="sSelBtn(this,null,this.closest('.s-num-grid'))">12h</div>
+        </div>
+        <div class="s-field-lbl">Ngày làm trong tuần</div>
+        <div class="s-day-grid">
+          <div class="s-day-btn sel" onclick="this.classList.toggle('sel')">T2</div>
+          <div class="s-day-btn sel" onclick="this.classList.toggle('sel')">T3</div>
+          <div class="s-day-btn sel" onclick="this.classList.toggle('sel')">T4</div>
+          <div class="s-day-btn sel" onclick="this.classList.toggle('sel')">T5</div>
+          <div class="s-day-btn sel" onclick="this.classList.toggle('sel')">T6</div>
+          <div class="s-day-btn" onclick="this.classList.toggle('sel')">T7</div>
+          <div class="s-day-btn" onclick="this.classList.toggle('sel')">CN</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 3: Giờ vào / ra -->
+    <div class="s-card" id="sCard3">
+      <div class="s-card-head" onclick="toggleCard('sCard3','sum3')">
+        <div class="s-card-icon" style="background:#FFF8E8">🕐</div>
+        <div class="s-card-info">
+          <div class="s-card-title">Giờ vào / ra ca</div>
+          <div class="s-card-summary" id="sum3">Ca 1: 08:00 → 17:00</div>
+        </div>
+        <div class="s-card-chevron">›</div>
+      </div>
+      <div class="s-card-body">
+        <div class="s-field-lbl">Ca 1</div>
+        <div class="s-time-row">
+          <input class="s-time-inp" type="time" value="08:00">
+          <div class="s-time-sep">→</div>
+          <input class="s-time-inp" type="time" value="17:00">
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 4: Nghỉ ngơi & Job phụ -->
+    <div class="s-card" id="sCard4">
+      <div class="s-card-head" onclick="toggleCard('sCard4','sum4')">
+        <div class="s-card-icon" style="background:#F5F0FF">☕</div>
+        <div class="s-card-info">
+          <div class="s-card-title">Nghỉ ngơi & Job phụ</div>
+          <div class="s-card-summary" id="sum4">Nghỉ 60' · Không job phụ</div>
+        </div>
+        <div class="s-card-chevron">›</div>
+      </div>
+      <div class="s-card-body">
+        <div class="s-field-lbl">Có nghỉ giữa giờ không?</div>
+        <div class="s-yn-grid" style="margin-bottom:4px">
+          <div class="s-yn-btn" onclick="sYN(this,false)">Không</div>
+          <div class="s-yn-btn sel" onclick="sYN(this,true)">Có · 60 phút</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="setup-save-bar">
+    <button class="s-save-btn" onclick="alert('✅ Đã lưu thiết lập!')">✓ Lưu thiết lập</button>
+  </div>
+</div>
+
+</div><!-- .demo-wrap -->
+
+<script>
+// ── Tab switch ──
+function showView(id, tab){
+  document.getElementById('viewOB').style.display = id==='OB' ? 'flex' : 'none';
+  document.getElementById('viewSetup').style.display = id==='Setup' ? 'flex' : 'none';
+  document.querySelectorAll('.demo-tab').forEach(t=>t.classList.remove('active'));
+  tab.classList.add('active');
+}
+
+// ── Setup card toggle ──
+function toggleCard(cardId, sumId){
+  const card = document.getElementById(cardId);
+  card.classList.toggle('open');
+}
+function sSelBtn(el, selector, grid){
+  const g = grid || el.closest(selector ? '[class*="num-grid"]' : '.s-num-grid') || el.parentElement;
+  g.querySelectorAll('.s-num-btn').forEach(b=>b.classList.remove('sel'));
+  el.classList.add('sel');
+}
+function sYN(el){ el.parentElement.querySelectorAll('.s-yn-btn').forEach(b=>b.classList.remove('sel')); el.classList.add('sel'); }
+
+// ── ONBOARDING ──
+let page = 1;
+const TOTAL = 5;
+
+const STEPS = ['🌐 Ngôn ngữ','👤 Cá nhân','📅 Lịch làm','🕐 Giờ giấc','☕ Nghỉ ngơi'];
+const DAYS = ['T2','T3','T4','T5','T6','T7','CN'];
+let selDays = [0,1,2,3,4];
+
+function renderStep(){
+  const track = document.getElementById('stepTrack');
+  track.innerHTML = STEPS.map((_,i) =>
+    `<div class="ob-step-seg ${i<page-1?'done':i===page-1?'active':''}"></div>`
+  ).join('');
+  document.getElementById('stepLbl').textContent = 'Bước '+page+' / '+TOTAL+' — '+STEPS[page-1];
+  document.getElementById('obBack').style.opacity = page===1 ? '0.3' : '1';
+  document.getElementById('obNext').textContent = page===TOTAL ? 'Bắt đầu dùng app ✓' : 'Tiếp theo →';
+}
+
+function renderPage(){
+  const body = document.getElementById('obBody');
+  renderStep();
+
+  if(page===1){
+    body.innerHTML=`
+      <span class="ob-icon">🌐</span>
+      <div class="ob-title">Chào mừng!</div>
+      <div class="ob-sub">Chọn ngôn ngữ và quốc gia làm việc để app hiển thị đúng ngày lễ và định dạng.</div>
+      <div class="q-card">
+        <div class="q-card-title">Ngôn ngữ</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+          ${[['🇻🇳','Tiếng Việt'],['🇬🇧','English'],['🇰🇷','한국어'],['🇯🇵','日本語'],['🇨🇳','中文'],['🇹🇭','ภาษาไทย']].map(([f,n])=>`
+            <div onclick="obSelLang(this)" class="ob-num-btn${n==='Tiếng Việt'?' sel':''}" style="padding:10px 4px;font-size:12px">
+              <div style="font-size:22px;margin-bottom:2px">${f}</div>${n}
+            </div>`).join('')}
+        </div>
+      </div>
+      <div class="q-card">
+        <div class="q-card-title">Quốc gia làm việc</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+          ${[['🇻🇳','Việt Nam'],['🇯🇵','Nhật Bản'],['🇰🇷','Hàn Quốc'],['🇹🇼','Đài Loan'],['🇸🇬','Singapore'],['🇺🇸','Khác']].map(([f,n])=>`
+            <div onclick="obSelLang(this)" class="ob-num-btn${n==='Việt Nam'?' sel':''}" style="padding:10px 4px;font-size:12px">
+              <div style="font-size:22px;margin-bottom:2px">${f}</div>${n}
+            </div>`).join('')}
+        </div>
+      </div>`;
+  }
+  else if(page===2){
+    body.innerHTML=`
+      <span class="ob-icon">👤</span>
+      <div class="ob-title">Bạn là ai?</div>
+      <div class="ob-sub">Thông tin hiển thị trên trang chủ. Có thể chỉnh lại sau.</div>
+      <div class="q-card">
+        <div class="q-card-title">Thông tin cơ bản</div>
+        <div class="ob-field-lbl">Họ và tên</div>
+        <input class="ob-field" placeholder="Nguyễn Văn A">
+        <div class="ob-field-lbl">Chức vụ / Công việc</div>
+        <input class="ob-field" placeholder="Nhân viên, Công nhân...">
+        <div class="ob-field-lbl">Tên công ty</div>
+        <input class="ob-field" placeholder="Công ty ABC" style="margin-bottom:0">
+      </div>`;
+  }
+  else if(page===3){
+    body.innerHTML=`
+      <span class="ob-icon">📅</span>
+      <div class="ob-title">Lịch làm việc</div>
+      <div class="ob-sub">App sẽ dùng thông tin này để tính lương và nhắc giờ làm chính xác hơn.</div>
+      <div class="q-card">
+        <div class="q-card-title">Số ca làm việc / ngày</div>
+        <div class="ob-num-grid">
+          <div class="ob-num-btn sel" onclick="obSel(this)">1 ca</div>
+          <div class="ob-num-btn" onclick="obSel(this)">2 ca</div>
+          <div class="ob-num-btn" onclick="obSel(this)">3 ca</div>
+          <div class="ob-num-btn" onclick="obSel(this)">4 ca</div>
+        </div>
+      </div>
+      <div class="q-card">
+        <div class="q-card-title">Ngày làm trong tuần <span class="info-badge" style="background:rgba(13,158,117,.2);color:#0D9E75">${selDays.length} ngày</span></div>
+        <div class="ob-day-grid" id="obDayGrid">
+          ${DAYS.map((d,i)=>`<div class="ob-day-btn${selDays.includes(i)?' sel':''}" onclick="obToggleDay(${i},this)">${d}</div>`).join('')}
+        </div>
+      </div>`;
+  }
+  else if(page===4){
+    body.innerHTML=`
+      <span class="ob-icon">🕐</span>
+      <div class="ob-title">Giờ vào / ra ca</div>
+      <div class="ob-sub">Đặt giờ chuẩn — app sẽ nhắc bạn và tự động tính giờ tăng ca.</div>
+      <div class="q-card">
+        <div class="q-card-title">Số giờ mỗi ca</div>
+        <div class="ob-num-grid" style="grid-template-columns:repeat(5,1fr)">
+          <div class="ob-num-btn" onclick="obSel(this)">6h</div>
+          <div class="ob-num-btn" onclick="obSel(this)">7h</div>
+          <div class="ob-num-btn sel" onclick="obSel(this)">8h</div>
+          <div class="ob-num-btn" onclick="obSel(this)">10h</div>
+          <div class="ob-num-btn" onclick="obSel(this)">12h</div>
+        </div>
+      </div>
+      <div class="q-card">
+        <div class="q-card-title">Ca 1 — Giờ vào & Hết ca</div>
+        <div class="ob-time-row">
+          <div style="flex:1;text-align:center">
+            <div class="ob-field-lbl" style="margin-bottom:5px">🟢 Vào ca</div>
+            <input class="ob-time-inp" type="time" value="08:00">
+          </div>
+          <div class="ob-time-sep" style="margin-top:20px">→</div>
+          <div style="flex:1;text-align:center">
+            <div class="ob-field-lbl" style="margin-bottom:5px">🔴 Hết ca</div>
+            <input class="ob-time-inp" type="time" value="17:00">
+          </div>
+        </div>
+      </div>`;
+  }
+  else if(page===5){
+    body.innerHTML=`
+      <span class="ob-icon">☕</span>
+      <div class="ob-title">Sắp xong rồi!</div>
+      <div class="ob-sub">Một vài cài đặt nhỏ để app tính giờ thực làm chính xác hơn.</div>
+      <div class="q-card">
+        <div class="q-card-title">Có nghỉ giữa giờ không?</div>
+        <div class="ob-yn-grid">
+          <div class="ob-yn-btn" onclick="obYN(this)">Không nghỉ</div>
+          <div class="ob-yn-btn sel" onclick="obYN(this)">Có · 60 phút</div>
+        </div>
+      </div>
+      <div class="ob-summary">
+        <div class="ob-summary-title">✅ Tóm tắt của bạn</div>
+        <div class="ob-sum-row">
+          <div class="ob-sum-icon">🌐</div>
+          <div class="ob-sum-text">Ngôn ngữ</div>
+          <div class="ob-sum-val">Tiếng Việt · 🇻🇳</div>
+        </div>
+        <div class="ob-sum-row">
+          <div class="ob-sum-icon">👤</div>
+          <div class="ob-sum-text">Thông tin</div>
+          <div class="ob-sum-val">Nguyễn Văn A</div>
+        </div>
+        <div class="ob-sum-row">
+          <div class="ob-sum-icon">📅</div>
+          <div class="ob-sum-text">Lịch làm việc</div>
+          <div class="ob-sum-val">1 ca · T2–T6</div>
+        </div>
+        <div class="ob-sum-row">
+          <div class="ob-sum-icon">🕐</div>
+          <div class="ob-sum-text">Giờ làm</div>
+          <div class="ob-sum-val">08:00 → 17:00</div>
+        </div>
+        <div class="ob-sum-row">
+          <div class="ob-sum-icon">☕</div>
+          <div class="ob-sum-text">Nghỉ giữa giờ</div>
+          <div class="ob-sum-val">60 phút</div>
+        </div>
+      </div>`;
+  }
+}
+
+function obGoNext(){
+  if(page<TOTAL){ page++; renderPage(); document.getElementById('obBody').scrollTop=0; }
+  else alert('✅ Hoàn tất onboarding! Vào trang chủ...');
+}
+function obGoBack(){
+  if(page>1){ page--; renderPage(); document.getElementById('obBody').scrollTop=0; }
+}
+function obSel(el){ el.parentElement.querySelectorAll('.ob-num-btn').forEach(b=>b.classList.remove('sel')); el.classList.add('sel'); }
+function obSelLang(el){ el.parentElement.querySelectorAll('.ob-num-btn').forEach(b=>b.classList.remove('sel')); el.classList.add('sel'); }
+function obYN(el){ el.parentElement.querySelectorAll('.ob-yn-btn').forEach(b=>b.classList.remove('sel')); el.classList.add('sel'); }
+function obToggleDay(idx, el){
+  const i = selDays.indexOf(idx);
+  if(i===-1) selDays.push(idx); else selDays.splice(i,1);
+  selDays.sort((a,b)=>a-b);
+  el.classList.toggle('sel');
+  // Cập nhật badge số ngày
+  const badge = document.querySelector('#obBody .info-badge');
+  if(badge) badge.textContent = selDays.length+' ngày';
+}
+
+renderPage();
+</script>
+</body>
+</html>
