@@ -558,6 +558,10 @@
       };
 
       console.log('[cc-int] ccNative ready. Plugins:', JSON.stringify(window.ccNative.plugins));
+      // Gắn Brain wrapper ngay sau khi ccNative sẵn sàng — tránh race condition
+      // (trước đây initBrainWrapper() chạy song song với initCcNative async nên
+      //  window.ccNative bị ghi đè sau, xóa mất brain đã gắn)
+      initBrainWrapper();
       // Trigger GPS startup check: plugin + quyền đã sẵn sàng → start GPS nếu OK
       if(typeof window.ensureGpsAutoRunning === 'function'){
         setTimeout(function(){ window.ensureGpsAutoRunning('ccNative-ready'); }, 100);
@@ -894,24 +898,19 @@
   }
 
   // ── Chờ Capacitor sẵn sàng rồi init ─────────────────────────────────
+  // initBrainWrapper() được gọi BÊN TRONG initCcNative() sau khi window.ccNative
+  // được set — không gọi standalone ở đây nữa để tránh race condition.
   if (window.Capacitor && window.Capacitor.Plugins) {
-    // Capacitor đã sẵn sàng
     initCcNative();
-    initBrainWrapper();
   } else {
-    // Chờ event deviceready (Capacitor 6)
     document.addEventListener('deviceready', () => {
       initCcNative();
-      initBrainWrapper();
     }, { once: true });
-    // Fallback: thử lại sau 2 giây
+    // Fallback: thử lại sau 2 giây nếu deviceready không bắn
     setTimeout(() => {
       if (!window.ccNative) {
         console.log('[cc-int] Fallback init...');
         initCcNative();
-      }
-      if (!window.ccNative || !window.ccNative.brain) {
-        initBrainWrapper();
       }
     }, 2000);
   }
