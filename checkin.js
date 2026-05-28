@@ -1902,6 +1902,7 @@ function _calcAdaptivePollMs(dist, wasInside, wasOutside){
   var d = Number(dist);
   var r = gpsActiveRadius(_gpsData && _gpsData.radius);
   if(!wasInside && !wasOutside && d <= r + GPS_BUFFER_ZONE) return GPS_POLL_SCHEDULE.BUFFER_ZONE;
+  if(wasInside && d < r) return GPS_POLL_SCHEDULE.INSIDE;
   if(Math.abs(d - r) <= 100) return GPS_POLL_SCHEDULE.NEAR;
   if(d > r + 500) return GPS_POLL_SCHEDULE.FAR_AWAY;
   return wasInside ? GPS_POLL_SCHEDULE.INSIDE : GPS_POLL_SCHEDULE.NEAR;
