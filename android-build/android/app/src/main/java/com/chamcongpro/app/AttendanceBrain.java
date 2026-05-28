@@ -42,6 +42,10 @@ public class AttendanceBrain {
         return instance;
     }
 
+    // ─── Cooldown cho gps_service_fix (tránh vòng lặp GPS → evaluate → setInterval → GPS) ──
+    private static final long GPS_FIX_COOLDOWN_MS = 10_000L; // 10 giây
+    private volatile long lastGpsFixEvalAt = 0;
+
     // ─── Kết quả evaluate ────────────────────────────────────────────────────
     public static class EvalResult {
         public String oldState;
@@ -70,6 +74,19 @@ public class AttendanceBrain {
             Log.d(TAG, "[" + triggerSource + "] disabled — skip");
             NativeAuditTrail.log(ctx, "BRAIN", "evaluate:skip", "disabled trigger=" + triggerSource);
             return result;
+        }
+
+        // Cooldown: gps_service_fix bị gọi mỗi khi GPS listener nhận fix mới.
+        // adjustGps() → setInterval() → restart listener → checkFreshLastKnownLocation()
+        // → checkGeofence() → evaluate() → vòng lặp vô hạn.
+        // Giới hạn tối đa 1 lần / 10 giây cho trigger này.
+        if ("gps_service_fix".equals(triggerSource)) {
+            long now = System.currentTimeMillis();
+            if (now - lastGpsFixEvalAt < GPS_FIX_COOLDOWN_MS) {
+                Log.d(TAG, "[gps_service_fix] cooldown — skip");
+                return result;
+            }
+            lastGpsFixEvalAt = now;
         }
 
         String state = AttendanceState.getState(ctx);

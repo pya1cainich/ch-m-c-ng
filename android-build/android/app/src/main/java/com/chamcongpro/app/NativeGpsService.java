@@ -439,7 +439,13 @@ public class NativeGpsService extends Service {
 
             case "set_interval":
                 long ms = intent.getLongExtra(EXTRA_BRAIN_INTERVAL_MS, 60_000L);
-                // Lưu interval mới vào prefs để configureTrackingFromPrefs() dùng
+                long curMs = getSharedPreferences(GPS_PREFS, MODE_PRIVATE)
+                    .getLong("brain_interval_ms", 30_000L);
+                // Không restart nếu interval không đổi — tránh vòng lặp GPS→evaluate→setInterval
+                if (ms == curMs && locationUpdatesActive) {
+                    android.util.Log.d("NativeGps", "[set_interval] same interval " + ms + "ms, skip restart");
+                    break;
+                }
                 getSharedPreferences(GPS_PREFS, MODE_PRIVATE).edit()
                     .putLong("brain_interval_ms", ms)
                     .apply();
@@ -448,7 +454,8 @@ public class NativeGpsService extends Service {
                     stopLocationUpdates();
                     return;
                 }
-                // Restart location updates với interval mới
+                // Restart với flag tắt checkFreshLastKnownLocation — tránh gọi checkGeofence() ngay
+                _skipFreshCheck = true;
                 stopLocationUpdates();
                 startLocationUpdates();
                 break;
@@ -478,10 +485,12 @@ public class NativeGpsService extends Service {
     //  Location tracking
     // ──────────────────────────────────────────────────────────────
 
+    private boolean _skipFreshCheck = false; // true khi restart do set_interval — tránh vòng lặp
+
     private void startLocationUpdates() {
         if (locationUpdatesActive && locationManager != null && locationListener != null) {
             ensureWakeLockHeld();
-            checkFreshLastKnownLocation("already-active");
+            if (!_skipFreshCheck) checkFreshLastKnownLocation("already-active");
             return;
         }
         removeLocationUpdatesOnly();
@@ -522,8 +531,9 @@ public class NativeGpsService extends Service {
             } else {
                 locationUpdatesActive = true;
                 ensureWakeLockHeld();
-                android.util.Log.d("NativeGps", "Location updates active");
-                checkFreshLastKnownLocation("start");
+                android.util.Log.d("NativeGps", "Location updates active, skipFresh=" + _skipFreshCheck);
+                if (!_skipFreshCheck) checkFreshLastKnownLocation("start");
+                _skipFreshCheck = false; // reset sau mỗi lần start
             }
         } catch (SecurityException e) {
             locationUpdatesActive = false;
